@@ -9,17 +9,17 @@ BPE tokenizer を正規表現に変換する研究用プロジェクトです.
 ```text
 .artifacts/
 ├─ r50k/
-│  ├─ python.bin        292,526 bytes
-│  └─ ecmascript.bin    386,247 bytes
+│  ├─ python.bin        216,906 bytes
+│  └─ ecmascript.bin    319,373 bytes
 ├─ p50k/
-│  ├─ python.bin        292,653 bytes
-│  └─ ecmascript.bin    386,498 bytes
+│  ├─ python.bin        217,008 bytes
+│  └─ ecmascript.bin    319,213 bytes
 ├─ cl100k/
-│  ├─ python.bin        598,814 bytes
-│  └─ ecmascript.bin    800,186 bytes
+│  ├─ python.bin        479,903 bytes
+│  └─ ecmascript.bin    694,446 bytes
 └─ o200k/
-   ├─ python.bin      1,271,929 bytes
-   └─ ecmascript.bin  1,690,912 bytes
+   ├─ python.bin      1,017,292 bytes
+   └─ ecmascript.bin  1,459,165 bytes
 ```
 
 ## Binary形式
@@ -37,10 +37,12 @@ token count           ULEB128
 base-token count      ULEB128
 rank width            ULEB128
 regex source          ULEB128 byte length + UTF-8
+capture rank count    ULEB128
+capture ranks         token countから算出した固定幅little-endian整数列
 ...
 ```
 
-Python 版は base-rank regex, merge-pair regex, pre-tokenizer regex を格納します. ECMAScript 版は base-rank bit regex 列, データから算出した個数の merge-bucket regex 列, pre-tokenizer regex を格納します.
+format version 1 の regex は terminal ごとに匿名 capture `()`を持ち, capture indexからtoken rankを引くside tableを別領域に格納します. Python版はbase-rank regexとside table, merge-pair regexとside table, pre-tokenizer regexを格納します. ECMAScript版はbase-rank bit regex列, データから算出した個数のmerge-bucket regex列とbucketごとのside table, pre-tokenizer regexを格納します.
 
 `p50k_base` の mergeable rank 空間では `50256` が special token 用に予約され, 通常BPE tokenのrankは `50255` から `50257` へ飛びます. artifactと両runtimeはこの予約rankを欠番のまま保持します.
 
@@ -64,7 +66,7 @@ regex emitter は文字列へ直接 trie を書き出さず, 2 段階の中間�
 
 1. `TaggedFST` は byte 列を入力, token rank を terminal 出力とする決定的・非巡回 transducer です.
 2. engine 非依存の regex AST は `Literal`, `Concat`, `Alternate`, `Tag`, `Empty`, `Never` で有限写像を表現します.
-3. Python / ECMAScript rendererが `Tag` を各 engine の capture 構文へ lowering します. ECMAScript の base-rank bit regex では同じ FST の出力を bit membership へ lowering します.
+3. Python / ECMAScript rendererは `Tag` を匿名captureへloweringし, capture出現順のrank side tableを同時に生成します. ECMAScriptのbase-rank bit regexでは同じFSTの出力をbit membershipへloweringします.
 
 この IR により, 今後の prefix / suffix factoring, capture 符号化, bucket 分割を意味を保った AST 変換として実装できます.
 

@@ -15,7 +15,9 @@ from bpe2regex.tagged_fst import TaggedFST, TaggedState
 
 def _ascii_escape(byte: int) -> str:
     character = chr(byte)
-    return character if character.isascii() and character.isalnum() else f"\\x{byte:02x}"
+    return (
+        character if character.isascii() and character.isalnum() else f"\\x{byte:02x}"
+    )
 
 
 class RegexASTTests(unittest.TestCase):
@@ -70,9 +72,7 @@ class TaggedFSTTests(unittest.TestCase):
             re.compile(
                 render_regex(
                     self.fst.to_regex(
-                        lambda rank, bit=bit: (
-                            EMPTY if rank & (1 << bit) else NEVER
-                        )
+                        lambda rank, bit=bit: EMPTY if rank & (1 << bit) else NEVER
                     ),
                     escape_byte=_ascii_escape,
                 ).encode("ascii")

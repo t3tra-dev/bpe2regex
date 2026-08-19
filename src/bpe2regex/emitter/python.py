@@ -6,14 +6,13 @@ from ..regex_ast import render_regex
 from ..tagged_fst import TaggedFST
 from ._common import RANK_SEPARATOR, encode_rank
 
-BASE_GROUP_PREFIX = "b"
-MERGE_GROUP_PREFIX = "m"
-
 
 @dataclass(frozen=True, slots=True)
 class RegexSources:
     byte_to_rank: str
+    byte_capture_ranks: tuple[int, ...]
     merge_pair: str
+    merge_capture_ranks: tuple[int, ...]
     token_count: int
     base_token_count: int
     rank_width: int
@@ -30,8 +29,9 @@ def _rank_stream_escape(byte: int) -> str:
     raise ValueError(f"unexpected rank-stream byte: {byte}")
 
 
-def _capture(group_prefix: str, rank: int) -> str:
-    return f"(?P<{group_prefix}{rank}>)"
+def _anonymous_capture(ranks: list[int], rank: int) -> str:
+    ranks.append(rank)
+    return "()"
 
 
 def emit_sources(
@@ -59,10 +59,11 @@ def emit_sources(
         for rank, token in enumerate(base_tokens)
         if token is not None
     )
+    byte_capture_ranks: list[int] = []
     byte_to_rank = render_regex(
         byte_fst.to_regex(),
         escape_byte=_byte_escape,
-        emit_tag=lambda rank: _capture(BASE_GROUP_PREFIX, rank),
+        emit_tag=lambda rank: _anonymous_capture(byte_capture_ranks, rank),
     )
 
     merge_pairs: list[tuple[bytes, int]] = []
@@ -87,10 +88,11 @@ def emit_sources(
         merge_pairs.append((key, child))
 
     merge_fst = TaggedFST.from_pairs(merge_pairs)
+    merge_capture_ranks: list[int] = []
     merge_pair = render_regex(
         merge_fst.to_regex(),
         escape_byte=_rank_stream_escape,
-        emit_tag=lambda rank: _capture(MERGE_GROUP_PREFIX, rank),
+        emit_tag=lambda rank: _anonymous_capture(merge_capture_ranks, rank),
     )
     return RegexSources(
         byte_to_rank=byte_to_rank,
@@ -99,4 +101,6 @@ def emit_sources(
         base_token_count=base_token_count,
         rank_width=rank_width,
         reserved_ranks=tuple(reserved_ranks),
+        byte_capture_ranks=tuple(byte_capture_ranks),
+        merge_capture_ranks=tuple(merge_capture_ranks),
     )

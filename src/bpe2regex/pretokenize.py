@@ -121,8 +121,7 @@ class PreTokenizer[EncodingT: Encoding]:
                 lower = f"[{_class_body(self.o200k_lower_ranges)}]"
                 prefix = f"[^\r\n{letter_body}{number_body}]"
                 contraction = (
-                    r"(?:'[sSſ]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|"
-                    r"'[lL][lL]|'[dD])?"
+                    r"(?:'[sSſ]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|" r"'[lL][lL]|'[dD])?"
                 )
                 self.source = (
                     rf"{prefix}?{upper}*{lower}+{contraction}"

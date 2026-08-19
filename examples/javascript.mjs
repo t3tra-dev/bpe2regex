@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { inflateRawSync } from "node:zlib";
 
 const MAGIC = Buffer.from("B2RX", "ascii");
-const FORMAT_VERSION = 2;
+const FORMAT_VERSION = 1;
 const ENCODINGS = new Map([
   [0, { name: "r50k_base", reservedRanks: [] }],
   [1, { name: "o200k_base", reservedRanks: [] }],
@@ -51,6 +51,31 @@ class BinaryReader {
 
   texts() {
     return Array.from({ length: this.uint() }, () => this.text());
+  }
+
+  ranks(tokenCount) {
+    const count = this.uint();
+    let width = 1;
+    for (let maximum = tokenCount - 1; maximum >= 256; maximum /= 256) {
+      width += 1;
+    }
+    const content = this.read(count * width);
+    const ranks = [];
+    for (let offset = 0; offset < content.length; offset += width) {
+      let rank = 0;
+      for (let byte = 0; byte < width; byte += 1) {
+        rank += content[offset + byte] * 256 ** byte;
+      }
+      if (!Number.isSafeInteger(rank) || rank >= tokenCount) {
+        throw new Error(`capture rank is outside the vocabulary: ${rank}`);
+      }
+      ranks.push(rank);
+    }
+    return ranks;
+  }
+
+  rankTables(tokenCount) {
+    return Array.from({ length: this.uint() }, () => this.ranks(tokenCount));
   }
 
   finish() {
@@ -169,6 +194,7 @@ function decodeArtifact(path) {
   const rankWidth = reader.uint();
   const byteSources = reader.texts();
   const mergeBuckets = reader.texts();
+  const mergeBucketRanks = reader.rankTables(tokenCount);
   const pretokenizerSource = reader.text();
   reader.finish();
   if (
@@ -176,7 +202,8 @@ function decodeArtifact(path) {
     baseTokenCount !== 256 ||
     rankWidth !== String(tokenCount - 1).length ||
     byteSources.length !== Math.ceil(Math.log2(baseTokenCount)) ||
-    mergeBuckets.length === 0
+    mergeBuckets.length === 0 ||
+    mergeBucketRanks.length !== mergeBuckets.length
   ) {
     throw new Error("invalid regex artifact dimensions");
   }
@@ -189,6 +216,7 @@ function decodeArtifact(path) {
     rankWidth,
     byteSources,
     mergeBuckets,
+    mergeBucketRanks,
     pretokenizerSource,
   };
 }
@@ -200,6 +228,7 @@ export class ECMAScriptRegexBPE {
     this.baseTokenCount = data.baseTokenCount;
     this.bytePatterns = data.byteSources.map(exactPattern);
     this.mergeBucketSources = data.mergeBuckets;
+    this.mergeBucketRanks = data.mergeBucketRanks;
     this.mergeBucketCount = data.mergeBuckets.length;
     this.mergeBucketPatterns = new Map();
     this.pretokenizer = new RegExp(data.pretokenizerSource, "uy");
@@ -222,13 +251,19 @@ export class ECMAScriptRegexBPE {
       right,
     ).padStart(this.rankWidth, "0")}`;
     const match = pattern.exec(pair);
-    if (match === null || match.groups === undefined) return undefined;
+    if (match === null) return undefined;
     let rank;
-    for (const [name, value] of Object.entries(match.groups)) {
-      if (value !== undefined) {
-        rank = Number(name.slice(1));
-        break;
+    let captureIndex = -1;
+    for (let index = 1; index < match.length; index += 1) {
+      if (match[index] !== undefined) {
+        if (captureIndex >= 0) {
+          throw new Error("merge bucket selected multiple captures");
+        }
+        captureIndex = index - 1;
       }
+    }
+    if (captureIndex >= 0) {
+      rank = this.mergeBucketRanks[bucket][captureIndex];
     }
     if (
       rank === undefined ||
@@ -266,8 +301,12 @@ export class ECMAScriptRegexBPE {
       const pattern = exactPattern(source);
       this.mergeBucketPatterns.set(bucket, pattern);
       let bucketRules = 0;
-      for (const match of source.matchAll(/\(\?<m([0-9]+)>/g)) {
-        const rank = Number(match[1]);
+      const captureRanks = this.mergeBucketRanks[bucket];
+      const captureCount = Array.from(source.matchAll(/\(\)/g)).length;
+      if (source.includes("(?<m") || captureCount !== captureRanks.length) {
+        throw new Error("merge bucket capture table width differs");
+      }
+      for (const rank of captureRanks) {
         if (
           !Number.isSafeInteger(rank) ||
           rank < this.baseTokenCount ||

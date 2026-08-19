@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MAGIC = b"B2RX"
-FORMAT_VERSION = 2
+FORMAT_VERSION = 1
 ENCODINGS = {
     0: "r50k_base",
     1: "o200k_base",
@@ -56,12 +56,36 @@ class BinaryReader:
         except UnicodeDecodeError as error:
             raise ValueError("invalid UTF-8 in regex artifact") from error
 
+    def ranks(self, token_count: int) -> tuple[int, ...]:
+        count = self.uint()
+        width = max(1, ((token_count - 1).bit_length() + 7) // 8)
+        content = self.read(count * width)
+        ranks = tuple(
+            int.from_bytes(content[offset : offset + width], "little")
+            for offset in range(0, len(content), width)
+        )
+        if any(rank >= token_count for rank in ranks):
+            raise ValueError("capture rank is outside the artifact vocabulary")
+        return ranks
+
     def finish(self) -> None:
         if self.position != len(self.value):
             raise ValueError("trailing data in regex artifact")
 
 
-def decode_artifact(path: Path) -> tuple[str, str, str, str, int, int, int]:
+def decode_artifact(
+    path: Path,
+) -> tuple[
+    str,
+    str,
+    str,
+    str,
+    int,
+    int,
+    int,
+    tuple[int, ...],
+    tuple[int, ...],
+]:
     reader = BinaryReader(path)
     if reader.read(len(MAGIC)) != MAGIC:
         raise ValueError("invalid regex artifact magic")
@@ -78,7 +102,9 @@ def decode_artifact(path: Path) -> tuple[str, str, str, str, int, int, int]:
     base_token_count = reader.uint()
     rank_width = reader.uint()
     byte_to_rank = reader.text()
+    byte_capture_ranks = reader.ranks(token_count)
     merge_pair = reader.text()
+    merge_capture_ranks = reader.ranks(token_count)
     pretokenizer = reader.text()
     reader.finish()
     if (
@@ -95,6 +121,8 @@ def decode_artifact(path: Path) -> tuple[str, str, str, str, int, int, int]:
         token_count,
         base_token_count,
         rank_width,
+        byte_capture_ranks,
+        merge_capture_ranks,
     )
 
 
@@ -111,20 +139,17 @@ class TokenMatch:
 
 def group_ranks(
     pattern: re.Pattern[bytes],
-    prefix: str,
     expected: Iterable[int],
+    capture_ranks: tuple[int, ...],
 ) -> tuple[int, ...]:
-    by_index = [-1] * (pattern.groups + 1)
-    observed: set[int] = set()
-    for name, index in pattern.groupindex.items():
-        if not name.startswith(prefix) or not name[len(prefix) :].isdecimal():
-            raise ValueError(f"invalid rank capture: {name}")
-        rank = int(name[len(prefix) :])
-        by_index[index] = rank
-        observed.add(rank)
-    if pattern.groups != len(pattern.groupindex) or observed != set(expected):
-        raise ValueError("rank capture groups differ from artifact dimensions")
-    return tuple(by_index)
+    expected_ranks = set(expected)
+    if pattern.groupindex or pattern.groups != len(capture_ranks):
+        raise ValueError("anonymous captures differ from their rank table")
+    if len(set(capture_ranks)) != len(capture_ranks):
+        raise ValueError("rank table contains duplicate ranks")
+    if set(capture_ranks) != expected_ranks:
+        raise ValueError("rank table differs from artifact dimensions")
+    return (-1, *capture_ranks)
 
 
 class RegexProgram:
@@ -135,23 +160,25 @@ class RegexProgram:
         token_count: int,
         base_token_count: int,
         rank_width: int,
+        byte_capture_ranks: tuple[int, ...],
+        merge_capture_ranks: tuple[int, ...],
         reserved_ranks: tuple[int, ...] = (),
     ) -> None:
         self.byte_pattern = re.compile(byte_source.encode("ascii"))
         self.merge_pattern = re.compile(merge_source.encode("ascii"))
         self.base_ranks = group_ranks(
             self.byte_pattern,
-            "b",
             range(base_token_count),
+            byte_capture_ranks,
         )
         self.merge_ranks = group_ranks(
             self.merge_pattern,
-            "m",
             (
                 rank
                 for rank in range(base_token_count, token_count)
                 if rank not in reserved_ranks
             ),
+            merge_capture_ranks,
         )
         self.token_count = token_count
         self.rank_width = rank_width
@@ -267,6 +294,8 @@ class Tokenizer:
             token_count,
             base_count,
             width,
+            byte_capture_ranks,
+            merge_capture_ranks,
         ) = decode_artifact(artifact)
         self.program = RegexProgram(
             byte_source,
@@ -274,6 +303,8 @@ class Tokenizer:
             token_count,
             base_count,
             width,
+            byte_capture_ranks,
+            merge_capture_ranks,
             RESERVED_RANKS.get(self.encoding, ()),
         )
         self.pretokenizer = re.compile(pretokenizer)

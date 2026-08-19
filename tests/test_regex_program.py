@@ -1,5 +1,6 @@
 import itertools
 import unittest
+import zlib
 
 from bpe2regex.binary import (
     decode_ecmascript_artifact,
@@ -78,12 +79,16 @@ class StdlibRegexProgramTests(unittest.TestCase):
         self.assertEqual(match.token_ids, [0, 3])
         self.assertEqual(match.captures(), [b"a", b"bc"])
 
-    def test_patterns_embed_base_and_merge_ranks(self) -> None:
+    def test_patterns_use_anonymous_captures_and_rank_side_tables(self) -> None:
         program, _, _ = toy_program()
-        self.assertEqual(set(program.byte_pattern.groupindex), {"b0", "b1", "b2"})
+        self.assertFalse(program.byte_pattern.groupindex)
+        self.assertEqual(program.byte_pattern.groups, 3)
+        self.assertEqual(set(program.sources.byte_capture_ranks), {0, 1, 2})
+        self.assertFalse(program.merge_pattern.groupindex)
+        self.assertEqual(program.merge_pattern.groups, 7)
         self.assertEqual(
-            set(program.merge_pattern.groupindex),
-            {"m3", "m4", "m5", "m6", "m7", "m8", "m9"},
+            set(program.sources.merge_capture_ranks),
+            {3, 4, 5, 6, 7, 8, 9},
         )
         self.assertFalse(program.sources.merge_pair.startswith("(?="))
 
@@ -100,22 +105,24 @@ class StdlibRegexProgramTests(unittest.TestCase):
         self.assertEqual(sources, program.sources)
         self.assertEqual(pretokenizer, r"[a-z]+|.")
         self.assertNotIn(b"(?P<", encoded)
+        self.assertEqual(zlib.decompress(encoded, wbits=-15)[4], 1)
 
         damaged = bytes((encoded[0] ^ 0xFF,)) + encoded[1:]
         with self.assertRaisesRegex(ValueError, "decompress"):
             decode_python_artifact(damaged)
 
-    def test_missing_rank_group_is_rejected(self) -> None:
+    def test_damaged_rank_side_table_is_rejected(self) -> None:
         program, _, _ = toy_program()
-        damaged = program.sources.byte_to_rank.replace("(?P<b0>", "(?:", 1)
         sources = PythonRegexSources(
-            byte_to_rank=damaged,
+            byte_to_rank=program.sources.byte_to_rank,
             merge_pair=program.sources.merge_pair,
             token_count=program.sources.token_count,
             base_token_count=program.sources.base_token_count,
             rank_width=program.sources.rank_width,
+            byte_capture_ranks=program.sources.byte_capture_ranks[:-1],
+            merge_capture_ranks=program.sources.merge_capture_ranks,
         )
-        with self.assertRaisesRegex(ValueError, "rank capture groups differ"):
+        with self.assertRaisesRegex(ValueError, "capture table width"):
             RegexBPE(sources)
 
     def test_ecmascript_engine_specific_sources(self) -> None:
@@ -137,7 +144,12 @@ class StdlibRegexProgramTests(unittest.TestCase):
             self.assertNotIn("(?<", source)
         for source in sources.merge_buckets:
             self.assertNotIn("(?P<", source)
-        self.assertTrue(any("(?<m" in source for source in sources.merge_buckets))
+            self.assertNotIn("(?<m", source)
+        self.assertTrue(any("()" in source for source in sources.merge_buckets))
+        self.assertEqual(
+            {rank for table in sources.merge_capture_ranks for rank in table},
+            set(range(3, 10)),
+        )
 
         encoded = encode_artifact(
             Encoding.R50K,
@@ -169,7 +181,7 @@ class StdlibRegexProgramTests(unittest.TestCase):
         match = program.fullmatch(b"aba")
         assert match is not None
         self.assertEqual(match.token_ids, [4])
-        self.assertNotIn("m2", program.merge_pattern.groupindex)
+        self.assertNotIn(2, python_sources.merge_capture_ranks)
 
         ecmascript_sources = emit_regex_sources(
             tokens,
@@ -178,6 +190,14 @@ class StdlibRegexProgramTests(unittest.TestCase):
             base_token_count=2,
         )
         self.assertEqual(ecmascript_sources.reserved_ranks, (2,))
+        self.assertNotIn(
+            2,
+            {
+                rank
+                for table in ecmascript_sources.merge_capture_ranks
+                for rank in table
+            },
+        )
         validate_ecmascript_sources(ecmascript_sources, tokens, parents)
 
 

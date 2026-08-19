@@ -138,14 +138,18 @@ def render_regex(
                 for part in parts
             )
         case Alternate(alternatives):
-            return "(?:" + "|".join(
-                render_regex(
-                    alternative,
-                    escape_byte=escape_byte,
-                    emit_tag=emit_tag,
+            return (
+                "(?:"
+                + "|".join(
+                    render_regex(
+                        alternative,
+                        escape_byte=escape_byte,
+                        emit_tag=emit_tag,
+                    )
+                    for alternative in alternatives
                 )
-                for alternative in alternatives
-            ) + ")"
+                + ")"
+            )
 
 
 __all__ = [

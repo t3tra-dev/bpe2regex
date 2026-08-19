@@ -6,10 +6,6 @@ from typing import TYPE_CHECKING, Any, Self
 
 from .binary import PYTHON_ARTIFACT_FILENAME, decode_python_artifact
 from .emitter._common import RANK_SEPARATOR, encode_rank
-from .emitter.python import (
-    BASE_GROUP_PREFIX,
-    MERGE_GROUP_PREFIX,
-)
 from .emitter.python import RegexSources as PythonRegexSources
 from .encoding import Encoding
 from .match import TokenMatch
@@ -21,36 +17,23 @@ if TYPE_CHECKING:
 def _group_rank_table(
     pattern: re.Pattern[bytes],
     *,
-    prefix: str,
     expected_ranks: Iterable[int],
+    capture_ranks: tuple[int, ...],
 ) -> tuple[int, ...]:
     expected = set(expected_ranks)
-    actual: dict[int, int] = {}
-    seen_ranks: set[int] = set()
-    for name, group_index in pattern.groupindex.items():
-        if not name.startswith(prefix):
-            raise ValueError(f"unexpected capture group name: {name!r}")
-        suffix = name[len(prefix) :]
-        if not suffix or not suffix.isdecimal() or str(int(suffix)) != suffix:
-            raise ValueError(f"invalid rank capture group name: {name!r}")
-        rank = int(suffix)
-        if rank in seen_ranks:
-            raise ValueError(f"duplicate rank capture group: {rank}")
-        actual[group_index] = rank
-        seen_ranks.add(rank)
-    if pattern.groups != len(actual):
-        raise ValueError("all captures in a regex program must be named rank groups")
-    if set(actual.values()) != expected:
-        missing = sorted(expected - set(actual.values()))[:5]
-        extra = sorted(set(actual.values()) - expected)[:5]
+    if pattern.groupindex:
+        raise ValueError("side-table regex captures must be anonymous")
+    if pattern.groups != len(capture_ranks):
+        raise ValueError("regex capture table width differs from its pattern")
+    if len(set(capture_ranks)) != len(capture_ranks):
+        raise ValueError("regex capture table contains duplicate ranks")
+    if set(capture_ranks) != expected:
+        missing = sorted(expected - set(capture_ranks))[:5]
+        extra = sorted(set(capture_ranks) - expected)[:5]
         raise ValueError(
-            f"rank capture groups differ; missing={missing}, extra={extra}"
+            f"rank capture table differs; missing={missing}, extra={extra}"
         )
-
-    ranks = [-1] * (pattern.groups + 1)
-    for group_index, rank in actual.items():
-        ranks[group_index] = rank
-    return tuple(ranks)
+    return (-1, *capture_ranks)
 
 
 class RegexBPE:
@@ -76,17 +59,17 @@ class RegexBPE:
         self.merge_pattern = re.compile(merge_source)
         self._base_ranks = _group_rank_table(
             self.byte_pattern,
-            prefix=BASE_GROUP_PREFIX,
             expected_ranks=range(sources.base_token_count),
+            capture_ranks=sources.byte_capture_ranks,
         )
         self._merge_ranks = _group_rank_table(
             self.merge_pattern,
-            prefix=MERGE_GROUP_PREFIX,
             expected_ranks=(
                 rank
                 for rank in range(sources.base_token_count, sources.token_count)
                 if rank not in sources.reserved_ranks
             ),
+            capture_ranks=sources.merge_capture_ranks,
         )
         if tuple(sorted(set(sources.reserved_ranks))) != sources.reserved_ranks or any(
             rank < sources.base_token_count or rank >= sources.token_count

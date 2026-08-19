@@ -15,6 +15,7 @@ type ByteEscape = Callable[[int], str]
 class RegexSources:
     byte_rank_bits: tuple[str, ...]
     merge_buckets: tuple[str, ...]
+    merge_capture_ranks: tuple[tuple[int, ...], ...]
     merge_bucket_count: int
     token_count: int
     base_token_count: int
@@ -23,7 +24,7 @@ class RegexSources:
 
     @property
     def max_bucket_rules(self) -> int:
-        return max((source.count("(?<m") for source in self.merge_buckets), default=0)
+        return max(map(len, self.merge_capture_ranks), default=0)
 
 
 def _is_prime(value: int) -> bool:
@@ -103,8 +104,9 @@ def _emit_rank_bits(
     )
 
 
-def _capture(rank: int) -> str:
-    return f"(?<m{rank}>)"
+def _anonymous_capture(ranks: list[int], rank: int) -> str:
+    ranks.append(rank)
+    return "()"
 
 
 def emit_sources(
@@ -128,9 +130,7 @@ def emit_sources(
         raise ValueError("vocabulary is too large for exact ECMAScript pair arithmetic")
 
     byte_fst = TaggedFST.from_pairs(
-        (token, rank)
-        for rank, token in enumerate(base_tokens)
-        if token is not None
+        (token, rank) for rank, token in enumerate(base_tokens) if token is not None
     )
 
     rank_width = max(1, len(str(token_count - 1)))
@@ -165,25 +165,31 @@ def emit_sources(
         bucket = merge_bucket_index(left, right, token_count, merge_bucket_count)
         merge_buckets[bucket].append((key, child))
 
+    merge_capture_ranks: list[tuple[int, ...]] = []
+
+    def render_bucket(pairs: list[tuple[bytes, int]]) -> str:
+        ranks: list[int] = []
+        source = render_regex(
+            TaggedFST.from_pairs(pairs).to_regex(),
+            escape_byte=_rank_stream_escape,
+            emit_tag=lambda rank: _anonymous_capture(ranks, rank),
+        )
+        merge_capture_ranks.append(tuple(ranks))
+        return source
+
     return RegexSources(
         byte_rank_bits=_emit_rank_bits(
             byte_fst,
             max(1, (base_token_count - 1).bit_length()),
             escape=_byte_escape,
         ),
-        merge_buckets=tuple(
-            render_regex(
-                TaggedFST.from_pairs(pairs).to_regex(),
-                escape_byte=_rank_stream_escape,
-                emit_tag=_capture,
-            )
-            for pairs in merge_buckets
-        ),
+        merge_buckets=tuple(render_bucket(pairs) for pairs in merge_buckets),
         merge_bucket_count=merge_bucket_count,
         token_count=token_count,
         base_token_count=base_token_count,
         rank_width=rank_width,
         reserved_ranks=tuple(reserved_ranks),
+        merge_capture_ranks=tuple(merge_capture_ranks),
     )
 
 
@@ -217,13 +223,29 @@ def validate_sources(
     byte_patterns = _compile_bit_patterns(sources.byte_rank_bits)
     if len(sources.merge_buckets) != sources.merge_bucket_count:
         raise ValueError("ECMAScript merge bucket count differs")
+    if len(sources.merge_capture_ranks) != sources.merge_bucket_count:
+        raise ValueError("ECMAScript merge capture table count differs")
     merge_patterns: list[re.Pattern[bytes]] = []
-    for source in sources.merge_buckets:
-        python_source = source.replace("(?<m", "(?P<m")
-        pattern = re.compile(python_source.encode("ascii"))
-        if pattern.groups != len(pattern.groupindex):
-            raise ValueError("every ECMAScript bucket capture must be named")
+    capture_tables: list[tuple[int, ...]] = []
+    for bucket, source in enumerate(sources.merge_buckets):
+        pattern = re.compile(source.encode("ascii"))
+        ranks = sources.merge_capture_ranks[bucket]
+        if pattern.groupindex:
+            raise ValueError("side-table ECMAScript bucket captures must be anonymous")
+        if pattern.groups != len(ranks):
+            raise ValueError("ECMAScript bucket capture table width differs")
         merge_patterns.append(pattern)
+        capture_tables.append(ranks)
+
+    expected_merge_ranks = set(range(sources.base_token_count, sources.token_count))
+    expected_merge_ranks.difference_update(sources.reserved_ranks)
+    actual_merge_ranks = {
+        rank for capture_table in capture_tables for rank in capture_table
+    }
+    if actual_merge_ranks != expected_merge_ranks or sum(
+        map(len, capture_tables)
+    ) != len(expected_merge_ranks):
+        raise ValueError("ECMAScript merge capture ranks differ")
     for expected_rank, token in enumerate(tokens[: sources.base_token_count]):
         if token is None:
             raise ValueError(f"base rank {expected_rank} is reserved")
@@ -250,11 +272,11 @@ def validate_sources(
             + encode_rank(right, sources.rank_width)
         )
         match = pattern.fullmatch(pair)
-        if match is None or match.lastgroup is None:
+        if match is None or match.lastindex is None:
             raise ValueError(
                 f"ECMAScript merge rule is missing for rank {expected_rank}"
             )
-        actual_rank = int(match.lastgroup[1:])
+        actual_rank = capture_tables[bucket][match.lastindex - 1]
         if actual_rank != expected_rank:
             raise ValueError(
                 f"ECMAScript merge rank differs: {actual_rank} != {expected_rank}"

@@ -10,7 +10,7 @@ PYTHON_ARTIFACT_FILENAME = "python.bin"
 ECMASCRIPT_ARTIFACT_FILENAME = "ecmascript.bin"
 
 _MAGIC = b"B2RX"
-_FORMAT_VERSION = 2
+_FORMAT_VERSION = 1
 _ENCODING_IDS = {
     Encoding.R50K: 0,
     Encoding.O200K: 1,
@@ -48,6 +48,40 @@ def _encode_texts(values: Sequence[str]) -> bytes:
     return _encode_uint(len(values)) + b"".join(map(_encode_text, values))
 
 
+def _rank_byte_width(token_count: int) -> int:
+    if token_count <= 0:
+        raise ValueError("binary artifact token count must be positive")
+    return max(1, ((token_count - 1).bit_length() + 7) // 8)
+
+
+def _encode_ranks(values: Sequence[int], token_count: int) -> bytes:
+    width = _rank_byte_width(token_count)
+    encoded = bytearray(_encode_uint(len(values)))
+    for rank in values:
+        if not 0 <= rank < token_count:
+            raise ValueError(f"capture rank is outside the vocabulary: {rank}")
+        encoded.extend(rank.to_bytes(width, "little"))
+    return bytes(encoded)
+
+
+def _encode_rank_tables(
+    values: Sequence[Sequence[int]],
+    token_count: int,
+) -> bytes:
+    return _encode_uint(len(values)) + b"".join(
+        _encode_ranks(table, token_count) for table in values
+    )
+
+
+def _validate_capture_ranks(
+    actual: Sequence[int],
+    expected: set[int],
+    name: str,
+) -> None:
+    if len(actual) != len(expected) or set(actual) != expected:
+        raise ValueError(f"{name} capture ranks differ from the regex dimensions")
+
+
 def _compress(payload: bytes) -> bytes:
     compressor = zlib.compressobj(level=9, wbits=-15)
     return compressor.compress(payload) + compressor.flush()
@@ -78,19 +112,49 @@ def encode_artifact(
 
     match compatibility, sources:
         case Compatibility.PYTHON, PythonRegexSources():
+            _validate_capture_ranks(
+                sources.byte_capture_ranks,
+                set(range(sources.base_token_count)),
+                "Python base",
+            )
+            _validate_capture_ranks(
+                sources.merge_capture_ranks,
+                set(range(sources.base_token_count, sources.token_count))
+                - set(sources.reserved_ranks),
+                "Python merge",
+            )
             payload = (
                 bytes(header)
                 + _encode_text(sources.byte_to_rank)
+                + _encode_ranks(sources.byte_capture_ranks, sources.token_count)
                 + _encode_text(sources.merge_pair)
+                + _encode_ranks(sources.merge_capture_ranks, sources.token_count)
                 + _encode_text(pretokenizer_source)
             )
         case Compatibility.ECMASCRIPT, ECMAScriptRegexSources():
             if sources.merge_bucket_count != len(sources.merge_buckets):
                 raise ValueError("ECMAScript merge bucket count differs")
+            if len(sources.merge_capture_ranks) != sources.merge_bucket_count:
+                raise ValueError("ECMAScript merge capture table count differs")
+            flattened_ranks = tuple(
+                rank
+                for capture_ranks in sources.merge_capture_ranks
+                for rank in capture_ranks
+            )
+            _validate_capture_ranks(
+                flattened_ranks,
+                set(range(sources.base_token_count, sources.token_count))
+                - set(sources.reserved_ranks),
+                "ECMAScript merge",
+            )
             payload = (
                 bytes(header)
                 + _encode_texts(sources.byte_rank_bits)
                 + _encode_texts(sources.merge_buckets)
+                + _encode_rank_tables(
+                    sources.merge_capture_ranks,
+                    sources.token_count,
+                )
                 + _encode_text(pretokenizer_source)
             )
         case _:
@@ -136,6 +200,21 @@ class _Reader:
     def texts(self) -> tuple[str, ...]:
         return tuple(self.text() for _ in range(self.uint()))
 
+    def ranks(self, token_count: int) -> tuple[int, ...]:
+        count = self.uint()
+        width = _rank_byte_width(token_count)
+        content = self.read(count * width)
+        ranks = tuple(
+            int.from_bytes(content[offset : offset + width], "little")
+            for offset in range(0, len(content), width)
+        )
+        if any(rank >= token_count for rank in ranks):
+            raise ValueError("capture rank is outside the artifact vocabulary")
+        return ranks
+
+    def rank_tables(self, token_count: int) -> tuple[tuple[int, ...], ...]:
+        return tuple(self.ranks(token_count) for _ in range(self.uint()))
+
     def finish(self) -> None:
         if self.position != len(self.value):
             raise ValueError("trailing data in regex artifact")
@@ -177,15 +256,21 @@ def decode_python_artifact(
         reader,
         Compatibility.PYTHON,
     )
+    byte_to_rank = reader.text()
+    byte_capture_ranks = reader.ranks(token_count)
+    merge_pair = reader.text()
+    merge_capture_ranks = reader.ranks(token_count)
     sources = PythonRegexSources(
-        byte_to_rank=reader.text(),
-        merge_pair=reader.text(),
+        byte_to_rank=byte_to_rank,
+        merge_pair=merge_pair,
         token_count=token_count,
         base_token_count=base_token_count,
         rank_width=rank_width,
         reserved_ranks=tuple(
             rank for rank in encoding.reserved_ranks if rank < token_count
         ),
+        byte_capture_ranks=byte_capture_ranks,
+        merge_capture_ranks=merge_capture_ranks,
     )
     pretokenizer_source = reader.text()
     reader.finish()
@@ -202,6 +287,7 @@ def decode_ecmascript_artifact(
     )
     byte_rank_bits = reader.texts()
     merge_buckets = reader.texts()
+    merge_capture_ranks = reader.rank_tables(token_count)
     sources = ECMAScriptRegexSources(
         byte_rank_bits=byte_rank_bits,
         merge_buckets=merge_buckets,
@@ -212,6 +298,7 @@ def decode_ecmascript_artifact(
         reserved_ranks=tuple(
             rank for rank in encoding.reserved_ranks if rank < token_count
         ),
+        merge_capture_ranks=merge_capture_ranks,
     )
     pretokenizer_source = reader.text()
     reader.finish()
