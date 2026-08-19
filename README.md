@@ -127,7 +127,7 @@ E2E 検証は [Makefile](examples/Makefile) に集約しています.
 make -C examples verify
 ```
 
-Makefile は 4 encoding の artifact を再生成してから, 両 examples でbinary 展開・regex compile・byte captures・Unicode / 境界ケースを検証します. Node.js では全 merge frontier pattern を V8 上で compile し, prefix-free 性・capture rank の欠落・重複・予約 rank 混入・pattern 幅を検査した上で, `tiktoken` から復元した全マージ親ペアを実際の prefix dispatch へ通します. 最後に決定的に生成した 1,008 入力について, `tiktoken`・Python API・Node.js APIのtoken IDが一致することを検証します.
+Makefile は 4 encoding の artifact を再生成してから, 両 examples でbinary 展開・regex compile・byte captures・Unicode / 境界ケースを検証します. Node.js では全 merge frontier pattern を V8 上で compile し, prefix-free 性・capture rank の欠落・重複・予約 rank 混入・pattern 幅を検査した上で, `tiktoken` から復元した全マージ親ペアを実際の prefix dispatch へ通します. 最後に決定的に生成した 1,008 入力について, `tiktoken`・Python API・Node.js API の token ID が一致することを検証します.
 
 `run` target には `ARGS` で任意の引数列を渡せます. 同じ引数が 4 encoding・両言語へ渡ります.
 
@@ -138,8 +138,8 @@ make -C examples run ARGS='--verify'
 
 ## Browser demo
 
-[examples/web](examples/web) は外部ライブラリを使わず, ブラウザ標準の `DecompressionStream` / `RegExp` / `TextEncoder` だけで ECMAScript artifactを読み込むデモです.
-artifactの取得・展開, RegExp compile, tokenize, benchmarkはWeb Worker内で直列実行します.
+[examples/web](examples/web) は外部ライブラリを使わず, ブラウザ標準の `DecompressionStream` / `RegExp` / `TextEncoder` だけで ECMAScript artifact を読み込むデモです.
+artifact の取得・展開, RegExp compile, tokenize, benchmark は Web Worker 内で直列実行します.
 
 https://t3tra-dev.github.io/bpe2regex/
 
