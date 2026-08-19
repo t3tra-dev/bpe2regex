@@ -132,9 +132,10 @@ def encode_artifact(
                 + _encode_text(pretokenizer_source)
             )
         case Compatibility.ECMASCRIPT, ECMAScriptRegexSources():
-            if sources.merge_bucket_count != len(sources.merge_buckets):
-                raise ValueError("ECMAScript merge bucket count differs")
-            if len(sources.merge_capture_ranks) != sources.merge_bucket_count:
+            frontier_count = len(sources.merge_prefixes)
+            if len(sources.merge_patterns) != frontier_count:
+                raise ValueError("ECMAScript merge frontier pattern count differs")
+            if len(sources.merge_capture_ranks) != frontier_count:
                 raise ValueError("ECMAScript merge capture table count differs")
             flattened_ranks = tuple(
                 rank
@@ -150,7 +151,8 @@ def encode_artifact(
             payload = (
                 bytes(header)
                 + _encode_texts(sources.byte_rank_bits)
-                + _encode_texts(sources.merge_buckets)
+                + _encode_texts(sources.merge_prefixes)
+                + _encode_texts(sources.merge_patterns)
                 + _encode_rank_tables(
                     sources.merge_capture_ranks,
                     sources.token_count,
@@ -286,12 +288,13 @@ def decode_ecmascript_artifact(
         Compatibility.ECMASCRIPT,
     )
     byte_rank_bits = reader.texts()
-    merge_buckets = reader.texts()
+    merge_prefixes = reader.texts()
+    merge_patterns = reader.texts()
     merge_capture_ranks = reader.rank_tables(token_count)
     sources = ECMAScriptRegexSources(
         byte_rank_bits=byte_rank_bits,
-        merge_buckets=merge_buckets,
-        merge_bucket_count=len(merge_buckets),
+        merge_prefixes=merge_prefixes,
+        merge_patterns=merge_patterns,
         token_count=token_count,
         base_token_count=base_token_count,
         rank_width=rank_width,

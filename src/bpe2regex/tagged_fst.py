@@ -128,8 +128,14 @@ class TaggedFST:
     def to_regex(
         self,
         lower_output: OutputLowering = tagged,
+        *,
+        start: int | None = None,
     ) -> RegexAST:
         """Lower the transducer to a prefix-factored, tagged regex AST."""
+
+        start_state = self.start if start is None else start
+        if not 0 <= start_state < len(self.states):
+            raise ValueError("the regex start state is out of range")
 
         cached: dict[int, RegexAST] = {}
 
@@ -149,7 +155,7 @@ class TaggedFST:
             cached[state_index] = result
             return result
 
-        return lower_state(self.start)
+        return lower_state(start_state)
 
 
 __all__ = ["OutputLowering", "TaggedFST", "TaggedState"]

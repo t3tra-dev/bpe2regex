@@ -10,19 +10,19 @@ BPE tokenizer を正規表現に変換する研究用プロジェクトです.
 .artifacts/
 ├─ r50k/
 │  ├─ python.bin        211,297 bytes
-│  └─ ecmascript.bin    298,610 bytes
+│  └─ ecmascript.bin    221,395 bytes
 ├─ p50k/
 │  ├─ python.bin        211,384 bytes
-│  └─ ecmascript.bin    297,233 bytes
+│  └─ ecmascript.bin    221,513 bytes
 ├─ cl100k/
 │  ├─ python.bin        469,209 bytes
-│  └─ ecmascript.bin    650,936 bytes
+│  └─ ecmascript.bin    485,412 bytes
 └─ o200k/
    ├─ python.bin        988,147 bytes
-   └─ ecmascript.bin  1,350,103 bytes
+   └─ ecmascript.bin  1,014,885 bytes
 ```
 
-## Binary形式
+## Binary 形式
 
 artifact 全体を raw DEFLATE で圧縮します. Python は標準 `zlib.decompress(..., wbits=-15)`, Node.js は標準 `inflateRawSync()` だけで展開できます.
 
@@ -42,15 +42,15 @@ capture ranks         token countから算出した固定幅little-endian整数�
 ...
 ```
 
-format version 1 の regex は terminal ごとに匿名 capture `()`を持ち, capture indexからtoken rankを引くside tableを別領域に格納します. Python版はbase-rank regexとside table, merge-pair regexとside table, pre-tokenizer regexを格納します. ECMAScript版はbase-rank bit regex列, データから算出した個数のmerge-bucket regex列とbucketごとのside table, pre-tokenizer regexを格納します.
+format version 1 の regex は terminal ごとに匿名 capture `()`を持ち, capture index から token rank を引く side table を別領域に格納します. Python 版は base-rank regex と side table, merge-pair regex と side table, pre-tokenizer regex を格納します. ECMAScript 版は base-rank bit regex 列, merge frontier prefix 列, suffix regex 列と pattern ごとの side table, pre-tokenizer regex を格納します.
 
-merge-pair regexの入力はrankを`0-9A-Za-z`の固定幅base62へ変換し, `left || right`として連結します. 現在の4 encodingはいずれもrank幅3, pair長6であり, 区切り文字は使用しません.
+merge-pair regex の入力は rank を `0-9A-Za-z` の固定幅 base62 へ変換し, `left || right`として連結します. 現在の 4 encoding はいずれも rank 幅 3, pair 長 6 であり, 区切り文字は使用しません.
 
-`p50k_base` の mergeable rank 空間では `50256` が special token 用に予約され, 通常BPE tokenのrankは `50255` から `50257` へ飛びます. artifactと両runtimeはこの予約rankを欠番のまま保持します.
+`p50k_base` の mergeable rank 空間では `50256` が special token 用に予約され, 通常 BPE token の rank は `50255` から `50257` へ飛びます. artifact と両 runtime はこの予約 rank を欠番のまま保持します.
 
 ## Encoding 種別
 
-variantは `Encoding`, regex dialectは `Compatibility` で独立に選びます. 現在は `Encoding.R50K`, `Encoding.P50K`, `Encoding.CL100K`, `Encoding.O200K` を実装しています.
+variant は `Encoding`, regex dialectは `Compatibility` で独立に選びます. 現在は `Encoding.R50K`, `Encoding.P50K`, `Encoding.CL100K`, `Encoding.O200K` を実装しています.
 
 ```python
 type R50K = Literal[Encoding.R50K]
@@ -70,7 +70,7 @@ regex emitter は文字列へ直接 trie を書き出さず, 2 段階の中間�
 2. engine 非依存の regex AST は `Literal`, `Concat`, `Alternate`, `Tag`, `Empty`, `Never` で有限写像を表現します.
 3. Python / ECMAScript rendererは `Tag` を匿名captureへloweringし, capture出現順のrank side tableを同時に生成します. ECMAScriptのbase-rank bit regexでは同じFSTの出力をbit membershipへloweringします.
 
-この IR により, 今後の prefix / suffix factoring, capture 符号化, bucket 分割を意味を保った AST 変換として実装できます.
+ECMAScript emitter は merge-pair FST の prefix-free な trie frontier をボトムアップ DP で選びます. 各 suffix regex のキャプチャ数をマージ規則数の平方根を切り上げた値以下に制限しながら, prefix・regex・side-table 境界の非圧縮 serialized cost 合計が最小になる cut を採用します. 共通 prefix は regex から除いて dispatch table へ移すため, modulo hash bucket で失われていた trie の局所性を維持できます.
 
 ## Build
 
@@ -84,7 +84,7 @@ uv run bpe2regex build cl100k --force
 uv run bpe2regex build o200k --force
 ```
 
-Python APIからも生成できます.
+Python API からも生成できます.
 
 ```bash
 uv sync
@@ -127,9 +127,9 @@ E2E 検証は [Makefile](examples/Makefile) に集約しています.
 make -C examples verify
 ```
 
-Makefile は4 encodingのartifactを再生成してから, 両examplesでbinary展開・regex compile・byte captures・Unicode / 境界ケースを検証します. Node.jsでは全merge bucketをV8上でcompileし, capture rankの欠落・重複・予約rank混入・bucket幅を検査した上で, `tiktoken`から復元した全merge親ペアを実際のbucket dispatchへ通します. 最後に決定的に生成した1,008入力について, `tiktoken`・Python API・Node.js APIのtoken IDが一致することを検証します.
+Makefile は 4 encoding の artifact を再生成してから, 両 examples でbinary 展開・regex compile・byte captures・Unicode / 境界ケースを検証します. Node.js では全 merge frontier pattern を V8 上で compile し, prefix-free 性・capture rank の欠落・重複・予約 rank 混入・pattern 幅を検査した上で, `tiktoken` から復元した全マージ親ペアを実際の prefix dispatch へ通します. 最後に決定的に生成した 1,008 入力について, `tiktoken`・Python API・Node.js APIのtoken IDが一致することを検証します.
 
-`run` targetには `ARGS` で任意の引数列を渡せます. 同じ引数が4 encoding・両言語へ渡ります.
+`run` target には `ARGS` で任意の引数列を渡せます. 同じ引数が 4 encoding・両言語へ渡ります.
 
 ```bash
 make -C examples run ARGS='こんにちは, 世界\!'

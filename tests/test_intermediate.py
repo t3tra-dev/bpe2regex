@@ -88,6 +88,20 @@ class TaggedFSTTests(unittest.TestCase):
                 )
                 self.assertEqual(actual, expected)
 
+    def test_regex_can_start_at_a_trie_frontier_state(self) -> None:
+        frontier_state = dict(self.fst.states[self.fst.start].transitions)[ord("c")]
+        source = render_regex(
+            self.fst.to_regex(start=frontier_state),
+            escape_byte=_ascii_escape,
+            emit_tag=lambda rank: f"(?P<t{rank}>)",
+        )
+        match = re.fullmatch(source.encode("ascii"), b"ab")
+        self.assertIsNotNone(match)
+        assert match is not None
+        self.assertEqual(match.lastgroup, "t6")
+        with self.assertRaisesRegex(ValueError, "start state"):
+            self.fst.to_regex(start=len(self.fst.states))
+
     def test_duplicate_keys_are_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "duplicate tagged FST key"):
             TaggedFST.from_pairs(((b"a", 1), (b"a", 2)))

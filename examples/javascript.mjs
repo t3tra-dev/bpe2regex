@@ -228,8 +228,9 @@ function decodeArtifact(path) {
   const baseTokenCount = reader.uint();
   const rankWidth = reader.uint();
   const byteSources = reader.texts();
-  const mergeBuckets = reader.texts();
-  const mergeBucketRanks = reader.rankTables(tokenCount);
+  const mergePrefixes = reader.texts();
+  const mergeSources = reader.texts();
+  const mergeRanks = reader.rankTables(tokenCount);
   const pretokenizerSource = reader.text();
   reader.finish();
   if (
@@ -237,8 +238,8 @@ function decodeArtifact(path) {
     baseTokenCount !== 256 ||
     rankWidth !== rankCodeWidth(tokenCount) ||
     byteSources.length !== Math.ceil(Math.log2(baseTokenCount)) ||
-    mergeBuckets.length === 0 ||
-    mergeBucketRanks.length !== mergeBuckets.length
+    mergeSources.length !== mergePrefixes.length ||
+    mergeRanks.length !== mergePrefixes.length
   ) {
     throw new Error("invalid regex artifact dimensions");
   }
@@ -250,8 +251,9 @@ function decodeArtifact(path) {
     baseTokenCount,
     rankWidth,
     byteSources,
-    mergeBuckets,
-    mergeBucketRanks,
+    mergePrefixes,
+    mergeSources,
+    mergeRanks,
     pretokenizerSource,
   };
 }
@@ -262,10 +264,13 @@ export class ECMAScriptRegexBPE {
     this.tokenCount = data.tokenCount;
     this.baseTokenCount = data.baseTokenCount;
     this.bytePatterns = data.byteSources.map(exactPattern);
-    this.mergeBucketSources = data.mergeBuckets;
-    this.mergeBucketRanks = data.mergeBucketRanks;
-    this.mergeBucketCount = data.mergeBuckets.length;
-    this.mergeBucketPatterns = new Map();
+    this.mergePrefixes = data.mergePrefixes;
+    this.mergeSources = data.mergeSources;
+    this.mergeRanks = data.mergeRanks;
+    this.mergePrefixMap = new Map(
+      data.mergePrefixes.map((prefix, index) => [prefix, index]),
+    );
+    this.mergePatterns = new Map();
     this.pretokenizer = new RegExp(data.pretokenizerSource, "uy");
     this.mergeCache = new Map();
     this.rankWidth = data.rankWidth;
@@ -273,41 +278,49 @@ export class ECMAScriptRegexBPE {
   }
 
   mergeRank(left, right) {
-    const key = left * this.tokenCount + right;
-    const cached = this.mergeCache.get(key);
-    if (cached !== undefined) return cached;
-    const bucket = key % this.mergeBucketCount;
-    let pattern = this.mergeBucketPatterns.get(bucket);
-    if (pattern === undefined) {
-      pattern = exactPattern(this.mergeBucketSources[bucket]);
-      this.mergeBucketPatterns.set(bucket, pattern);
-    }
     const pair =
       encodeRank(left, this.rankWidth) + encodeRank(right, this.rankWidth);
-    const match = pattern.exec(pair);
+    const cached = this.mergeCache.get(pair);
+    if (cached !== undefined) return cached;
+    let patternIndex;
+    let prefixLength = 0;
+    for (; prefixLength <= pair.length; prefixLength += 1) {
+      const candidate = this.mergePrefixMap.get(pair.slice(0, prefixLength));
+      if (candidate !== undefined) {
+        patternIndex = candidate;
+        break;
+      }
+    }
+    if (patternIndex === undefined) return undefined;
+    let pattern = this.mergePatterns.get(patternIndex);
+    if (pattern === undefined) {
+      pattern = exactPattern(this.mergeSources[patternIndex]);
+      this.mergePatterns.set(patternIndex, pattern);
+    }
+    const match = pattern.exec(pair.slice(prefixLength));
     if (match === null) return undefined;
     let rank;
     let captureIndex = -1;
     for (let index = 1; index < match.length; index += 1) {
       if (match[index] !== undefined) {
         if (captureIndex >= 0) {
-          throw new Error("merge bucket selected multiple captures");
+          throw new Error("merge pattern selected multiple captures");
         }
         captureIndex = index - 1;
       }
     }
     if (captureIndex >= 0) {
-      rank = this.mergeBucketRanks[bucket][captureIndex];
+      rank = this.mergeRanks[patternIndex][captureIndex];
     }
     if (
       rank === undefined ||
       rank < this.baseTokenCount ||
       this.reservedRanks.has(rank)
     ) {
-      throw new Error("merge bucket matched without a child-rank capture");
+      throw new Error("merge pattern matched without a child-rank capture");
     }
     if (rank >= this.tokenCount) throw new Error(`invalid merge rank: ${rank}`);
-    this.mergeCache.set(key, rank);
+    this.mergeCache.set(pair, rank);
     return rank;
   }
 
@@ -329,16 +342,36 @@ export class ECMAScriptRegexBPE {
     }
 
     const mergeRanks = new Set();
-    let maxBucketRules = 0;
-    for (let bucket = 0; bucket < this.mergeBucketCount; bucket += 1) {
-      const source = this.mergeBucketSources[bucket];
+    const sortedPrefixes = [...this.mergePrefixes].sort();
+    if (
+      new Set(sortedPrefixes).size !== sortedPrefixes.length ||
+      sortedPrefixes.some(
+        (prefix, index) =>
+          index + 1 < sortedPrefixes.length &&
+          sortedPrefixes[index + 1].startsWith(prefix),
+      ) ||
+      sortedPrefixes.some(
+        (prefix) =>
+          prefix.length > this.rankWidth * 2 ||
+          [...prefix].some((symbol) => !RANK_ALPHABET.includes(symbol)),
+      )
+    ) {
+      throw new Error("merge frontier is not canonical and prefix-free");
+    }
+    let maxPatternRules = 0;
+    for (
+      let patternIndex = 0;
+      patternIndex < this.mergeSources.length;
+      patternIndex += 1
+    ) {
+      const source = this.mergeSources[patternIndex];
       const pattern = exactPattern(source);
-      this.mergeBucketPatterns.set(bucket, pattern);
-      let bucketRules = 0;
-      const captureRanks = this.mergeBucketRanks[bucket];
+      this.mergePatterns.set(patternIndex, pattern);
+      let patternRules = 0;
+      const captureRanks = this.mergeRanks[patternIndex];
       const captureCount = Array.from(source.matchAll(/\(\)/g)).length;
       if (source.includes("(?<m") || captureCount !== captureRanks.length) {
-        throw new Error("merge bucket capture table width differs");
+        throw new Error("merge pattern capture table width differs");
       }
       for (const rank of captureRanks) {
         if (
@@ -351,9 +384,9 @@ export class ECMAScriptRegexBPE {
           throw new Error(`invalid or duplicate merge capture rank: ${rank}`);
         }
         mergeRanks.add(rank);
-        bucketRules += 1;
+        patternRules += 1;
       }
-      maxBucketRules = Math.max(maxBucketRules, bucketRules);
+      maxPatternRules = Math.max(maxPatternRules, patternRules);
     }
 
     const expectedMergeRules =
@@ -368,12 +401,16 @@ export class ECMAScriptRegexBPE {
         throw new Error(`missing merge capture rank: ${rank}`);
       }
     }
-    if (maxBucketRules > this.mergeBucketCount) {
+    const maxRules = Math.ceil(Math.sqrt(expectedMergeRules));
+    if (maxPatternRules > maxRules) {
       throw new Error(
-        `merge bucket is wider than the split bound: ${maxBucketRules}`,
+        `merge pattern is wider than the frontier bound: ${maxPatternRules}`,
       );
     }
-    return { mergeBucketCount: this.mergeBucketCount, maxBucketRules };
+    return {
+      mergePatternCount: this.mergeSources.length,
+      maxPatternRules,
+    };
   }
 
   fullmatch(input) {
@@ -624,8 +661,8 @@ function verify(program) {
   }
   console.info(
     `javascript ${program.encoding}: ok (${cases.length} text cases, ` +
-      `${structure.mergeBucketCount} merge buckets, ` +
-      `max ${structure.maxBucketRules} rules/bucket)`,
+      `${structure.mergePatternCount} merge frontier patterns, ` +
+      `max ${structure.maxPatternRules} rules/pattern)`,
   );
 }
 

@@ -1,6 +1,7 @@
 import itertools
 import unittest
 import zlib
+from dataclasses import replace
 
 from bpe2regex.binary import (
     decode_ecmascript_artifact,
@@ -137,15 +138,21 @@ class StdlibRegexProgramTests(unittest.TestCase):
         self.assertIsInstance(sources, ECMAScriptRegexSources)
         validate_ecmascript_sources(sources, tokens, parents)
         self.assertEqual(len(sources.byte_rank_bits), 2)
-        self.assertEqual(len(sources.merge_buckets), 3)
-        self.assertLessEqual(sources.max_bucket_rules, 3)
+        self.assertEqual(
+            sources.merge_prefixes,
+            ("0", "1", "31", "35", "4"),
+        )
+        self.assertEqual(len(sources.merge_patterns), len(sources.merge_prefixes))
+        self.assertLessEqual(sources.max_pattern_rules, 3)
+        for left, right in itertools.combinations(sources.merge_prefixes, 2):
+            self.assertFalse(left.startswith(right) or right.startswith(left))
         for source in sources.byte_rank_bits:
             self.assertNotIn("(?P<", source)
             self.assertNotIn("(?<", source)
-        for source in sources.merge_buckets:
+        for source in sources.merge_patterns:
             self.assertNotIn("(?P<", source)
             self.assertNotIn("(?<m", source)
-        self.assertTrue(any("()" in source for source in sources.merge_buckets))
+        self.assertTrue(any("()" in source for source in sources.merge_patterns))
         self.assertEqual(
             {rank for table in sources.merge_capture_ranks for rank in table},
             set(range(3, 10)),
@@ -161,6 +168,13 @@ class StdlibRegexProgramTests(unittest.TestCase):
         self.assertIs(encoding, Encoding.R50K)
         self.assertEqual(decoded, sources)
         self.assertEqual(pretokenizer, r"[a-z]+|.")
+
+        damaged = replace(
+            sources,
+            merge_prefixes=("0", "01", *sources.merge_prefixes[2:]),
+        )
+        with self.assertRaisesRegex(ValueError, "prefix-free"):
+            validate_ecmascript_sources(damaged, tokens, parents)
 
     def test_reserved_rank_is_skipped_by_both_emitters(self) -> None:
         tokens = (b"a", b"b", None, b"ab", b"aba")

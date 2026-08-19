@@ -1,6 +1,7 @@
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from math import isqrt
 from typing import Any
 
@@ -14,66 +15,161 @@ type ByteEscape = Callable[[int], str]
 @dataclass(frozen=True, slots=True)
 class RegexSources:
     byte_rank_bits: tuple[str, ...]
-    merge_buckets: tuple[str, ...]
+    merge_prefixes: tuple[str, ...]
+    merge_patterns: tuple[str, ...]
     merge_capture_ranks: tuple[tuple[int, ...], ...]
-    merge_bucket_count: int
     token_count: int
     base_token_count: int
     rank_width: int
     reserved_ranks: tuple[int, ...] = ()
 
     @property
-    def max_bucket_rules(self) -> int:
+    def max_pattern_rules(self) -> int:
         return max(map(len, self.merge_capture_ranks), default=0)
 
 
-def _is_prime(value: int) -> bool:
-    if value < 2:
-        return False
-    if value % 2 == 0:
-        return value == 2
-    divisor = 3
-    while divisor * divisor <= value:
-        if value % divisor == 0:
-            return False
-        divisor += 2
-    return True
+@dataclass(frozen=True, slots=True)
+class _FrontierFragment:
+    prefix: bytes
+    state: int
+    rule_count: int
 
 
-def _derive_merge_bucket_count(
-    parent_pairs: Sequence[tuple[int, int]],
-    token_count: int,
-) -> int:
-    """Balance dispatch width against the measured worst bucket width."""
-    merge_rule_count = len(parent_pairs)
-    if merge_rule_count == 0:
-        return 1
-    root = isqrt(merge_rule_count)
-    lower_bound = root if root * root == merge_rule_count else root + 1
-    candidate = max(2, lower_bound)
-    while True:
-        while not _is_prime(candidate):
-            candidate += 1
-        loads = [0] * candidate
-        for left, right in parent_pairs:
-            loads[merge_bucket_index(left, right, token_count, candidate)] += 1
-        if max(loads) <= candidate:
-            return candidate
-        candidate += 1
+def _uint_width(value: int) -> int:
+    width = 1
+    while value >= 0x80:
+        value >>= 7
+        width += 1
+    return width
 
 
-def merge_bucket_index(
-    left: int,
-    right: int,
-    token_count: int,
-    bucket_count: int,
-) -> int:
-    """Map a complete parent pair to a bucket using exact integer arithmetic."""
-    if not (0 <= left < token_count and 0 <= right < token_count):
-        raise ValueError(f"parent ranks are outside the vocabulary: {(left, right)}")
-    if bucket_count <= 0:
-        raise ValueError("merge bucket count must be positive")
-    return (left * token_count + right) % bucket_count
+def _ceil_sqrt(value: int) -> int:
+    root = isqrt(value)
+    return root if root * root == value else root + 1
+
+
+def _split_merge_frontier(
+    fst: TaggedFST,
+    *,
+    key_width: int,
+    max_rules: int,
+) -> tuple[_FrontierFragment, ...]:
+    """Choose a minimum-local-cost, prefix-free trie frontier with a rule cap."""
+    if key_width <= 0:
+        raise ValueError("merge trie key width must be positive")
+    if max_rules <= 0:
+        raise ValueError("merge frontier rule bound must be positive")
+
+    state_count = len(fst.states)
+    prefixes: list[bytes | None] = [None] * state_count
+    prefixes[fst.start] = b""
+    pending = [fst.start]
+    while pending:
+        state_index = pending.pop()
+        prefix = prefixes[state_index]
+        assert prefix is not None
+        state = fst.states[state_index]
+        if state.output is not None and len(prefix) != key_width:
+            raise ValueError("merge trie has a terminal outside the fixed key width")
+        if len(prefix) >= key_width and state.transitions:
+            raise ValueError("merge trie has transitions beyond the fixed key width")
+        for symbol, target in state.transitions:
+            if prefixes[target] is not None:
+                raise ValueError("merge frontier requires a trie without shared states")
+            prefixes[target] = prefix + bytes((symbol,))
+            pending.append(target)
+    if any(prefix is None for prefix in prefixes):
+        raise ValueError("merge trie contains an unreachable state")
+
+    output_counts: list[int | None] = [None] * state_count
+    source_lengths: list[int | None] = [None] * state_count
+
+    def measure(state_index: int) -> tuple[int, int]:
+        known_count = output_counts[state_index]
+        known_length = source_lengths[state_index]
+        if known_count is not None and known_length is not None:
+            return known_count, known_length
+        state = fst.states[state_index]
+        output_count = int(state.output is not None)
+        branch_lengths = [2] if state.output is not None else []
+        for _, target in state.transitions:
+            child_count, child_length = measure(target)
+            output_count += child_count
+            branch_lengths.append(1 + child_length)
+        if not branch_lengths:
+            source_length = 4  # ``(?!)``
+        elif len(branch_lengths) == 1:
+            source_length = branch_lengths[0]
+        else:
+            source_length = sum(branch_lengths) + len(branch_lengths) + 3
+        output_counts[state_index] = output_count
+        source_lengths[state_index] = source_length
+        return output_count, source_length
+
+    measure(fst.start)
+    plan_costs = [0] * state_count
+    plan_counts = [0] * state_count
+    keep_state = [False] * state_count
+
+    def plan(state_index: int) -> tuple[int, int]:
+        state = fst.states[state_index]
+        prefix = prefixes[state_index]
+        output_count = output_counts[state_index]
+        source_length = source_lengths[state_index]
+        assert prefix is not None
+        assert output_count is not None
+        assert source_length is not None
+        if output_count == 0:
+            return 0, 0
+
+        split_cost = 0
+        split_count = 0
+        split_allowed = state.output is None and bool(state.transitions)
+        if split_allowed:
+            for _, target in state.transitions:
+                child_cost, child_count = plan(target)
+                split_cost += child_cost
+                split_count += child_count
+
+        keep_allowed = output_count <= max_rules
+        keep_cost = (
+            _uint_width(len(prefix))
+            + len(prefix)
+            + _uint_width(source_length)
+            + source_length
+            + _uint_width(output_count)
+        )
+        if keep_allowed and (
+            not split_allowed or (keep_cost, 1, 0) <= (split_cost, split_count, 1)
+        ):
+            plan_costs[state_index] = keep_cost
+            plan_counts[state_index] = 1
+            keep_state[state_index] = True
+        elif split_allowed:
+            plan_costs[state_index] = split_cost
+            plan_counts[state_index] = split_count
+        else:
+            raise ValueError("merge trie cannot satisfy the frontier rule bound")
+        return plan_costs[state_index], plan_counts[state_index]
+
+    plan(fst.start)
+    fragments: list[_FrontierFragment] = []
+
+    def collect(state_index: int) -> None:
+        output_count = output_counts[state_index]
+        assert output_count is not None
+        if output_count == 0:
+            return
+        if keep_state[state_index]:
+            prefix = prefixes[state_index]
+            assert prefix is not None
+            fragments.append(_FrontierFragment(prefix, state_index, output_count))
+            return
+        for _, target in fst.states[state_index].transitions:
+            collect(target)
+
+    collect(fst.start)
+    return tuple(fragments)
 
 
 def _byte_escape(byte: int) -> str:
@@ -126,9 +222,6 @@ def emit_sources(
         raise ValueError("every base token must contain exactly one byte")
     if len(set(base_tokens)) != len(base_tokens):
         raise ValueError("base tokens must be unique")
-    if token_count * token_count > (1 << 53) - 1:
-        raise ValueError("vocabulary is too large for exact ECMAScript pair arithmetic")
-
     byte_fst = TaggedFST.from_pairs(
         (token, rank) for rank, token in enumerate(base_tokens) if token is not None
     )
@@ -150,26 +243,32 @@ def emit_sources(
             raise ValueError(f"rank {child} has invalid parents {(left, right)}")
         merge_rules.append((child, left, right))
 
-    merge_bucket_count = _derive_merge_bucket_count(
-        [(left, right) for _, left, right in merge_rules], token_count
-    )
-    merge_buckets: list[list[tuple[bytes, int]]] = [
-        [] for _ in range(merge_bucket_count)
+    merge_pairs = [
+        (encode_rank_pair(left, right, rank_width), child)
+        for child, left, right in merge_rules
     ]
-    for child, left, right in merge_rules:
-        key = encode_rank_pair(left, right, rank_width)
-        bucket = merge_bucket_index(left, right, token_count, merge_bucket_count)
-        merge_buckets[bucket].append((key, child))
-
+    merge_fst = TaggedFST.from_pairs(merge_pairs)
+    merge_rule_count = len(merge_pairs)
+    frontier = (
+        _split_merge_frontier(
+            merge_fst,
+            key_width=rank_width * 2,
+            max_rules=_ceil_sqrt(merge_rule_count),
+        )
+        if merge_rule_count
+        else ()
+    )
     merge_capture_ranks: list[tuple[int, ...]] = []
 
-    def render_bucket(pairs: list[tuple[bytes, int]]) -> str:
+    def render_fragment(fragment: _FrontierFragment) -> str:
         ranks: list[int] = []
         source = render_regex(
-            TaggedFST.from_pairs(pairs).to_regex(),
+            merge_fst.to_regex(start=fragment.state),
             escape_byte=_rank_stream_escape,
             emit_tag=lambda rank: _anonymous_capture(ranks, rank),
         )
+        if len(ranks) != fragment.rule_count:
+            raise ValueError("merge frontier output count changed while rendering")
         merge_capture_ranks.append(tuple(ranks))
         return source
 
@@ -179,8 +278,8 @@ def emit_sources(
             max(1, (base_token_count - 1).bit_length()),
             escape=_byte_escape,
         ),
-        merge_buckets=tuple(render_bucket(pairs) for pairs in merge_buckets),
-        merge_bucket_count=merge_bucket_count,
+        merge_prefixes=tuple(fragment.prefix.decode("ascii") for fragment in frontier),
+        merge_patterns=tuple(render_fragment(fragment) for fragment in frontier),
         token_count=token_count,
         base_token_count=base_token_count,
         rank_width=rank_width,
@@ -217,19 +316,37 @@ def validate_sources(
 ) -> None:
     """Validate every embedded base rank and merge rule with stdlib ``re``."""
     byte_patterns = _compile_bit_patterns(sources.byte_rank_bits)
-    if len(sources.merge_buckets) != sources.merge_bucket_count:
-        raise ValueError("ECMAScript merge bucket count differs")
-    if len(sources.merge_capture_ranks) != sources.merge_bucket_count:
+    frontier_count = len(sources.merge_prefixes)
+    if len(sources.merge_patterns) != frontier_count:
+        raise ValueError("ECMAScript merge frontier pattern count differs")
+    if len(sources.merge_capture_ranks) != frontier_count:
         raise ValueError("ECMAScript merge capture table count differs")
+    encoded_prefixes: list[bytes] = []
+    for prefix in sources.merge_prefixes:
+        try:
+            encoded = prefix.encode("ascii")
+        except UnicodeEncodeError as error:
+            raise ValueError("ECMAScript merge prefixes must be ASCII") from error
+        if len(encoded) > sources.rank_width * 2 or any(
+            byte not in RANK_ALPHABET for byte in encoded
+        ):
+            raise ValueError("ECMAScript merge prefix is not canonical base62")
+        encoded_prefixes.append(encoded)
+    sorted_prefixes = sorted(encoded_prefixes)
+    if len(set(encoded_prefixes)) != frontier_count or any(
+        right.startswith(left) for left, right in pairwise(sorted_prefixes)
+    ):
+        raise ValueError("ECMAScript merge frontier is not prefix-free")
+    prefix_to_pattern = {prefix: index for index, prefix in enumerate(encoded_prefixes)}
     merge_patterns: list[re.Pattern[bytes]] = []
     capture_tables: list[tuple[int, ...]] = []
-    for bucket, source in enumerate(sources.merge_buckets):
+    for pattern_index, source in enumerate(sources.merge_patterns):
         pattern = re.compile(source.encode("ascii"))
-        ranks = sources.merge_capture_ranks[bucket]
+        ranks = sources.merge_capture_ranks[pattern_index]
         if pattern.groupindex:
-            raise ValueError("side-table ECMAScript bucket captures must be anonymous")
+            raise ValueError("side-table ECMAScript captures must be anonymous")
         if pattern.groups != len(ranks):
-            raise ValueError("ECMAScript bucket capture table width differs")
+            raise ValueError("ECMAScript merge capture table width differs")
         merge_patterns.append(pattern)
         capture_tables.append(ranks)
 
@@ -255,20 +372,26 @@ def validate_sources(
         if expected_rank in reserved:
             continue
         left, right = (int(value) for value in parents[expected_rank])
-        bucket = merge_bucket_index(
-            left,
-            right,
-            sources.token_count,
-            sources.merge_bucket_count,
-        )
-        pattern = merge_patterns[bucket]
         pair = encode_rank_pair(left, right, sources.rank_width)
-        match = pattern.fullmatch(pair)
+        dispatched = next(
+            (
+                (prefix_to_pattern[pair[:length]], length)
+                for length in range(len(pair) + 1)
+                if pair[:length] in prefix_to_pattern
+            ),
+            None,
+        )
+        if dispatched is None:
+            raise ValueError(
+                f"ECMAScript merge frontier is missing rank {expected_rank}"
+            )
+        pattern_index, prefix_length = dispatched
+        match = merge_patterns[pattern_index].fullmatch(pair[prefix_length:])
         if match is None or match.lastindex is None:
             raise ValueError(
                 f"ECMAScript merge rule is missing for rank {expected_rank}"
             )
-        actual_rank = capture_tables[bucket][match.lastindex - 1]
+        actual_rank = capture_tables[pattern_index][match.lastindex - 1]
         if actual_rank != expected_rank:
             raise ValueError(
                 f"ECMAScript merge rank differs: {actual_rank} != {expected_rank}"

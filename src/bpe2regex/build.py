@@ -104,7 +104,7 @@ def build_regex_artifact[EncodingT: Encoding](
     finally:
         program.close()
 
-    _notify(progress, "compiling ECMAScript rank-bit and merge-bucket tries")
+    _notify(progress, "compiling ECMAScript rank-bit and merge-frontier tries")
     ecmascript_sources = emit_regex_sources(
         vocabulary.tokens,
         parents,
@@ -136,10 +136,13 @@ def build_regex_artifact[EncodingT: Encoding](
         "ecmascript_byte_pattern_characters": sum(
             map(len, ecmascript_sources.byte_rank_bits)
         ),
-        "ecmascript_merge_pattern_count": len(ecmascript_sources.merge_buckets),
-        "ecmascript_merge_bucket_max_rules": ecmascript_sources.max_bucket_rules,
+        "ecmascript_merge_pattern_count": len(ecmascript_sources.merge_patterns),
+        "ecmascript_merge_pattern_max_rules": (ecmascript_sources.max_pattern_rules),
+        "ecmascript_merge_prefix_characters": sum(
+            map(len, ecmascript_sources.merge_prefixes)
+        ),
         "ecmascript_merge_pattern_characters": sum(
-            map(len, ecmascript_sources.merge_buckets)
+            map(len, ecmascript_sources.merge_patterns)
         ),
         "pretokenizer_pattern_characters": len(pretokenizer.source),
         "build_seconds": time.perf_counter() - started,
