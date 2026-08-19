@@ -1,0 +1,1 @@
+.artifacts/**/*.bin filter=lfs diff=lfs merge=lfs -text
