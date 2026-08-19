@@ -1,18 +1,13 @@
-import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
+from ..regex_ast import render_regex
+from ..tagged_fst import TaggedFST
 from ._common import RANK_SEPARATOR, encode_rank
 
 BASE_GROUP_PREFIX = "b"
 MERGE_GROUP_PREFIX = "m"
-
-
-@dataclass(slots=True)
-class _TrieNode:
-    children: dict[int, _TrieNode] = field(default_factory=dict)
-    terminal_rank: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,30 +20,18 @@ class RegexSources:
     reserved_ranks: tuple[int, ...] = ()
 
 
-def _insert_trie(root: _TrieNode, key: bytes, rank: int) -> None:
-    node = root
-    for byte in key:
-        node = node.children.setdefault(byte, _TrieNode())
-    if node.terminal_rank is not None:
-        raise ValueError(
-            f"duplicate merge parent pair for ranks {node.terminal_rank}, {rank}"
-        )
-    node.terminal_rank = rank
+def _byte_escape(byte: int) -> str:
+    return f"\\x{byte:02x}"
 
 
-def _emit_trie(node: _TrieNode, *, group_prefix: str) -> bytes:
-    alternatives: list[bytes] = []
-    if node.terminal_rank is not None:
-        alternatives.append(f"(?P<{group_prefix}{node.terminal_rank}>)".encode("ascii"))
-    for byte, child in sorted(node.children.items()):
-        alternatives.append(
-            re.escape(bytes((byte,))) + _emit_trie(child, group_prefix=group_prefix)
-        )
-    if not alternatives:
-        raise ValueError("cannot emit an empty trie node")
-    if len(alternatives) == 1:
-        return alternatives[0]
-    return b"(?:" + b"|".join(alternatives) + b")"
+def _rank_stream_escape(byte: int) -> str:
+    if byte == ord(",") or ord("0") <= byte <= ord("9"):
+        return chr(byte)
+    raise ValueError(f"unexpected rank-stream byte: {byte}")
+
+
+def _capture(group_prefix: str, rank: int) -> str:
+    return f"(?P<{group_prefix}{rank}>)"
 
 
 def emit_sources(
@@ -70,15 +53,19 @@ def emit_sources(
         raise ValueError("base tokens must be unique")
 
     rank_width = max(1, len(str(token_count - 1)))
-    byte_alternatives = [
+    byte_fst = TaggedFST.from_pairs(
         # The validation above proves that every base token is bytes.
-        f"(?P<{BASE_GROUP_PREFIX}{rank}>\\x{token[0]:02x})"
+        (token, rank)
         for rank, token in enumerate(base_tokens)
         if token is not None
-    ]
-    byte_to_rank = "(?:" + "|".join(byte_alternatives) + ")"
+    )
+    byte_to_rank = render_regex(
+        byte_fst.to_regex(),
+        escape_byte=_byte_escape,
+        emit_tag=lambda rank: _capture(BASE_GROUP_PREFIX, rank),
+    )
 
-    root = _TrieNode()
+    merge_pairs: list[tuple[bytes, int]] = []
     reserved_ranks: list[int] = []
     for child in range(base_token_count, token_count):
         if tokens[child] is None:
@@ -97,9 +84,14 @@ def emit_sources(
             + RANK_SEPARATOR
             + encode_rank(right, rank_width)
         )
-        _insert_trie(root, key, child)
+        merge_pairs.append((key, child))
 
-    merge_pair = _emit_trie(root, group_prefix=MERGE_GROUP_PREFIX).decode("ascii")
+    merge_fst = TaggedFST.from_pairs(merge_pairs)
+    merge_pair = render_regex(
+        merge_fst.to_regex(),
+        escape_byte=_rank_stream_escape,
+        emit_tag=lambda rank: _capture(MERGE_GROUP_PREFIX, rank),
+    )
     return RegexSources(
         byte_to_rank=byte_to_rank,
         merge_pair=merge_pair,

@@ -58,6 +58,16 @@ tokenizer: Tokenizer[R50K]
 result: BuildResult[R50K]
 ```
 
+## Compiler IR
+
+regex emitter は文字列へ直接 trie を書き出さず, 2 段階の中間表現を経由します.
+
+1. `TaggedFST` は byte 列を入力, token rank を terminal 出力とする決定的・非巡回 transducer です.
+2. engine 非依存の regex AST は `Literal`, `Concat`, `Alternate`, `Tag`, `Empty`, `Never` で有限写像を表現します.
+3. Python / ECMAScript rendererが `Tag` を各 engine の capture 構文へ lowering します. ECMAScript の base-rank bit regex では同じ FST の出力を bit membership へ lowering します.
+
+この IR により, 今後の prefix / suffix factoring, capture 符号化, bucket 分割を意味を保った AST 変換として実装できます.
+
 ## Build
 
 CLI が artifact 生成を担当します.

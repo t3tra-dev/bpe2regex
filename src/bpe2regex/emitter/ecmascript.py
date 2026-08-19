@@ -1,18 +1,14 @@
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import isqrt
 from typing import Any
 
+from ..regex_ast import EMPTY, NEVER, RegexAST, render_regex
+from ..tagged_fst import TaggedFST
 from ._common import RANK_SEPARATOR, encode_rank
 
 type ByteEscape = Callable[[int], str]
-
-
-@dataclass(slots=True)
-class _RankTrieNode:
-    children: dict[int, _RankTrieNode] = field(default_factory=dict)
-    terminal_rank: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,17 +75,6 @@ def merge_bucket_index(
     return (left * token_count + right) % bucket_count
 
 
-def _insert(root: _RankTrieNode, key: bytes, rank: int) -> None:
-    node = root
-    for byte in key:
-        node = node.children.setdefault(byte, _RankTrieNode())
-    if node.terminal_rank is not None:
-        raise ValueError(
-            f"duplicate regex trie key for ranks {node.terminal_rank}, {rank}"
-        )
-    node.terminal_rank = rank
-
-
 def _byte_escape(byte: int) -> str:
     return f"\\x{byte:02x}"
 
@@ -100,50 +85,26 @@ def _rank_stream_escape(byte: int) -> str:
     raise ValueError(f"unexpected rank-stream byte: {byte}")
 
 
-def _emit_bit_pattern(
-    node: _RankTrieNode,
-    bit: int,
-    *,
-    escape: ByteEscape,
-) -> str | None:
-    alternatives: list[str] = []
-    if node.terminal_rank is not None and node.terminal_rank & (1 << bit):
-        alternatives.append("")
-    for byte, child in sorted(node.children.items()):
-        suffix = _emit_bit_pattern(child, bit, escape=escape)
-        if suffix is not None:
-            alternatives.append(escape(byte) + suffix)
-    if not alternatives:
-        return None
-    if len(alternatives) == 1:
-        return alternatives[0]
-    return "(?:" + "|".join(alternatives) + ")"
-
-
 def _emit_rank_bits(
-    root: _RankTrieNode,
+    fst: TaggedFST,
     bit_count: int,
     *,
     escape: ByteEscape,
 ) -> tuple[str, ...]:
-    patterns: list[str] = []
-    for bit in range(bit_count):
-        source = _emit_bit_pattern(root, bit, escape=escape)
-        patterns.append(source if source is not None else "(?!)")
-    return tuple(patterns)
+    def bit_output(bit: int) -> Callable[[int], RegexAST]:
+        return lambda rank: EMPTY if rank & (1 << bit) else NEVER
+
+    return tuple(
+        render_regex(
+            fst.to_regex(bit_output(bit)),
+            escape_byte=escape,
+        )
+        for bit in range(bit_count)
+    )
 
 
-def _emit_ranked_pattern(node: _RankTrieNode) -> str:
-    alternatives: list[str] = []
-    if node.terminal_rank is not None:
-        alternatives.append(f"(?<m{node.terminal_rank}>)")
-    for byte, child in sorted(node.children.items()):
-        alternatives.append(_rank_stream_escape(byte) + _emit_ranked_pattern(child))
-    if not alternatives:
-        raise ValueError("cannot emit an empty ranked trie")
-    if len(alternatives) == 1:
-        return alternatives[0]
-    return "(?:" + "|".join(alternatives) + ")"
+def _capture(rank: int) -> str:
+    return f"(?<m{rank}>)"
 
 
 def emit_sources(
@@ -166,10 +127,11 @@ def emit_sources(
     if token_count * token_count > (1 << 53) - 1:
         raise ValueError("vocabulary is too large for exact ECMAScript pair arithmetic")
 
-    byte_root = _RankTrieNode()
-    for rank, token in enumerate(base_tokens):
-        assert token is not None
-        _insert(byte_root, token, rank)
+    byte_fst = TaggedFST.from_pairs(
+        (token, rank)
+        for rank, token in enumerate(base_tokens)
+        if token is not None
+    )
 
     rank_width = max(1, len(str(token_count - 1)))
     merge_rules: list[tuple[int, int, int]] = []
@@ -191,7 +153,9 @@ def emit_sources(
     merge_bucket_count = _derive_merge_bucket_count(
         [(left, right) for _, left, right in merge_rules], token_count
     )
-    merge_roots = [_RankTrieNode() for _ in range(merge_bucket_count)]
+    merge_buckets: list[list[tuple[bytes, int]]] = [
+        [] for _ in range(merge_bucket_count)
+    ]
     for child, left, right in merge_rules:
         key = (
             encode_rank(left, rank_width)
@@ -199,17 +163,21 @@ def emit_sources(
             + encode_rank(right, rank_width)
         )
         bucket = merge_bucket_index(left, right, token_count, merge_bucket_count)
-        _insert(merge_roots[bucket], key, child)
+        merge_buckets[bucket].append((key, child))
 
     return RegexSources(
         byte_rank_bits=_emit_rank_bits(
-            byte_root,
+            byte_fst,
             max(1, (base_token_count - 1).bit_length()),
             escape=_byte_escape,
         ),
         merge_buckets=tuple(
-            _emit_ranked_pattern(root) if root.children else "(?!)"
-            for root in merge_roots
+            render_regex(
+                TaggedFST.from_pairs(pairs).to_regex(),
+                escape_byte=_rank_stream_escape,
+                emit_tag=_capture,
+            )
+            for pairs in merge_buckets
         ),
         merge_bucket_count=merge_bucket_count,
         token_count=token_count,
