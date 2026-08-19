@@ -2,9 +2,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from ..rank_codec import RANK_ALPHABET, encode_rank_pair, rank_code_width
 from ..regex_ast import render_regex
 from ..tagged_fst import TaggedFST
-from ._common import RANK_SEPARATOR, encode_rank
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +24,7 @@ def _byte_escape(byte: int) -> str:
 
 
 def _rank_stream_escape(byte: int) -> str:
-    if byte == ord(",") or ord("0") <= byte <= ord("9"):
+    if byte in RANK_ALPHABET:
         return chr(byte)
     raise ValueError(f"unexpected rank-stream byte: {byte}")
 
@@ -52,7 +52,7 @@ def emit_sources(
     if len(set(base_tokens)) != len(base_tokens):
         raise ValueError("base tokens must be unique")
 
-    rank_width = max(1, len(str(token_count - 1)))
+    rank_width = rank_code_width(token_count)
     byte_fst = TaggedFST.from_pairs(
         # The validation above proves that every base token is bytes.
         (token, rank)
@@ -80,11 +80,7 @@ def emit_sources(
         left, right = (int(value) for value in parent)
         if not (0 <= left < child and 0 <= right < child):
             raise ValueError(f"rank {child} has invalid parents {(left, right)}")
-        key = (
-            encode_rank(left, rank_width)
-            + RANK_SEPARATOR
-            + encode_rank(right, rank_width)
-        )
+        key = encode_rank_pair(left, right, rank_width)
         merge_pairs.append((key, child))
 
     merge_fst = TaggedFST.from_pairs(merge_pairs)

@@ -9,17 +9,17 @@ BPE tokenizer を正規表現に変換する研究用プロジェクトです.
 ```text
 .artifacts/
 ├─ r50k/
-│  ├─ python.bin        216,906 bytes
-│  └─ ecmascript.bin    319,373 bytes
+│  ├─ python.bin        211,297 bytes
+│  └─ ecmascript.bin    298,610 bytes
 ├─ p50k/
-│  ├─ python.bin        217,008 bytes
-│  └─ ecmascript.bin    319,213 bytes
+│  ├─ python.bin        211,384 bytes
+│  └─ ecmascript.bin    297,233 bytes
 ├─ cl100k/
-│  ├─ python.bin        479,903 bytes
-│  └─ ecmascript.bin    694,446 bytes
+│  ├─ python.bin        469,209 bytes
+│  └─ ecmascript.bin    650,936 bytes
 └─ o200k/
-   ├─ python.bin      1,017,292 bytes
-   └─ ecmascript.bin  1,459,165 bytes
+   ├─ python.bin        988,147 bytes
+   └─ ecmascript.bin  1,350,103 bytes
 ```
 
 ## Binary形式
@@ -43,6 +43,8 @@ capture ranks         token countから算出した固定幅little-endian整数�
 ```
 
 format version 1 の regex は terminal ごとに匿名 capture `()`を持ち, capture indexからtoken rankを引くside tableを別領域に格納します. Python版はbase-rank regexとside table, merge-pair regexとside table, pre-tokenizer regexを格納します. ECMAScript版はbase-rank bit regex列, データから算出した個数のmerge-bucket regex列とbucketごとのside table, pre-tokenizer regexを格納します.
+
+merge-pair regexの入力はrankを`0-9A-Za-z`の固定幅base62へ変換し, `left || right`として連結します. 現在の4 encodingはいずれもrank幅3, pair長6であり, 区切り文字は使用しません.
 
 `p50k_base` の mergeable rank 空間では `50256` が special token 用に予約され, 通常BPE tokenのrankは `50255` から `50257` へ飛びます. artifactと両runtimeはこの予約rankを欠番のまま保持します.
 

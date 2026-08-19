@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from math import isqrt
 from typing import Any
 
+from ..rank_codec import RANK_ALPHABET, encode_rank_pair, rank_code_width
 from ..regex_ast import EMPTY, NEVER, RegexAST, render_regex
 from ..tagged_fst import TaggedFST
-from ._common import RANK_SEPARATOR, encode_rank
 
 type ByteEscape = Callable[[int], str]
 
@@ -81,7 +81,7 @@ def _byte_escape(byte: int) -> str:
 
 
 def _rank_stream_escape(byte: int) -> str:
-    if byte == ord(",") or ord("0") <= byte <= ord("9"):
+    if byte in RANK_ALPHABET:
         return chr(byte)
     raise ValueError(f"unexpected rank-stream byte: {byte}")
 
@@ -133,7 +133,7 @@ def emit_sources(
         (token, rank) for rank, token in enumerate(base_tokens) if token is not None
     )
 
-    rank_width = max(1, len(str(token_count - 1)))
+    rank_width = rank_code_width(token_count)
     merge_rules: list[tuple[int, int, int]] = []
     reserved_ranks: list[int] = []
     for child in range(base_token_count, token_count):
@@ -157,11 +157,7 @@ def emit_sources(
         [] for _ in range(merge_bucket_count)
     ]
     for child, left, right in merge_rules:
-        key = (
-            encode_rank(left, rank_width)
-            + RANK_SEPARATOR
-            + encode_rank(right, rank_width)
-        )
+        key = encode_rank_pair(left, right, rank_width)
         bucket = merge_bucket_index(left, right, token_count, merge_bucket_count)
         merge_buckets[bucket].append((key, child))
 
@@ -266,11 +262,7 @@ def validate_sources(
             sources.merge_bucket_count,
         )
         pattern = merge_patterns[bucket]
-        pair = (
-            encode_rank(left, sources.rank_width)
-            + RANK_SEPARATOR
-            + encode_rank(right, sources.rank_width)
-        )
+        pair = encode_rank_pair(left, right, sources.rank_width)
         match = pattern.fullmatch(pair)
         if match is None or match.lastindex is None:
             raise ValueError(

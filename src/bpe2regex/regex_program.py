@@ -5,10 +5,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from .binary import PYTHON_ARTIFACT_FILENAME, decode_python_artifact
-from .emitter._common import RANK_SEPARATOR, encode_rank
 from .emitter.python import RegexSources as PythonRegexSources
 from .encoding import Encoding
 from .match import TokenMatch
+from .rank_codec import encode_rank_pair, rank_code_width
 
 if TYPE_CHECKING:
     from .tokenizer import Tokenizer
@@ -76,7 +76,7 @@ class RegexBPE:
             for rank in sources.reserved_ranks
         ):
             raise ValueError("reserved ranks are not canonical for the regex program")
-        if sources.rank_width != max(1, len(str(sources.token_count - 1))):
+        if sources.rank_width != rank_code_width(sources.token_count):
             raise ValueError("rank width is not canonical for the token count")
         if sources.base_token_count == 256:
             observed_ranks: set[int] = set()
@@ -112,11 +112,7 @@ class RegexBPE:
         cached = self._merge_rank_cache.get(key)
         if cached is not None:
             return cached
-        encoded = (
-            encode_rank(left, self.sources.rank_width)
-            + RANK_SEPARATOR
-            + encode_rank(right, self.sources.rank_width)
-        )
+        encoded = encode_rank_pair(left, right, self.sources.rank_width)
         match = self.merge_pattern.fullmatch(encoded)
         if match is None:
             return None

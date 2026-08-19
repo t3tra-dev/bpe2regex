@@ -5,6 +5,8 @@ import { inflateRawSync } from "node:zlib";
 
 const MAGIC = Buffer.from("B2RX", "ascii");
 const FORMAT_VERSION = 1;
+const RANK_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const RANK_RADIX = RANK_ALPHABET.length;
 const ENCODINGS = new Map([
   [0, { name: "r50k_base", reservedRanks: [] }],
   [1, { name: "o200k_base", reservedRanks: [] }],
@@ -12,6 +14,39 @@ const ENCODINGS = new Map([
   [3, { name: "cl100k_base", reservedRanks: [] }],
 ]);
 const ECMASCRIPT_COMPATIBILITY = 1;
+
+function rankCodeWidth(tokenCount) {
+  if (!Number.isSafeInteger(tokenCount) || tokenCount <= 0) {
+    throw new Error("token count must be a positive safe integer");
+  }
+  let width = 1;
+  let capacity = RANK_RADIX;
+  while (capacity < tokenCount) {
+    width += 1;
+    capacity *= RANK_RADIX;
+  }
+  return width;
+}
+
+function encodeRank(rank, width) {
+  if (
+    !Number.isSafeInteger(width) ||
+    width <= 0 ||
+    !Number.isSafeInteger(rank) ||
+    rank < 0 ||
+    rank >= RANK_RADIX ** width
+  ) {
+    throw new Error(`rank ${rank} does not fit in ${width} base62 digits`);
+  }
+  const encoded = Array(width).fill(RANK_ALPHABET[0]);
+  let remainder = rank;
+  for (let position = width - 1; position >= 0; position -= 1) {
+    const digit = remainder % RANK_RADIX;
+    remainder = Math.floor(remainder / RANK_RADIX);
+    encoded[position] = RANK_ALPHABET[digit];
+  }
+  return encoded.join("");
+}
 
 class BinaryReader {
   constructor(path) {
@@ -200,7 +235,7 @@ function decodeArtifact(path) {
   if (
     tokenCount <= baseTokenCount ||
     baseTokenCount !== 256 ||
-    rankWidth !== String(tokenCount - 1).length ||
+    rankWidth !== rankCodeWidth(tokenCount) ||
     byteSources.length !== Math.ceil(Math.log2(baseTokenCount)) ||
     mergeBuckets.length === 0 ||
     mergeBucketRanks.length !== mergeBuckets.length
@@ -247,9 +282,8 @@ export class ECMAScriptRegexBPE {
       pattern = exactPattern(this.mergeBucketSources[bucket]);
       this.mergeBucketPatterns.set(bucket, pattern);
     }
-    const pair = `${String(left).padStart(this.rankWidth, "0")},${String(
-      right,
-    ).padStart(this.rankWidth, "0")}`;
+    const pair =
+      encodeRank(left, this.rankWidth) + encodeRank(right, this.rankWidth);
     const match = pattern.exec(pair);
     if (match === null) return undefined;
     let rank;

@@ -1,6 +1,8 @@
 from enum import Enum
 from typing import Literal
 
+from .rank_codec import rank_code_width
+
 
 class Encoding(Enum):
     """BPE encoding variants supported by the compiler."""
@@ -42,7 +44,7 @@ class Encoding(Enum):
 
     @property
     def rank_width(self) -> int:
-        return len(str(self.token_count - 1))
+        return rank_code_width(self.token_count)
 
 
 type R50K = Literal[Encoding.R50K]

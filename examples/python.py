@@ -10,6 +10,8 @@ from pathlib import Path
 
 MAGIC = b"B2RX"
 FORMAT_VERSION = 1
+RANK_ALPHABET = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+RANK_RADIX = len(RANK_ALPHABET)
 ENCODINGS = {
     0: "r50k_base",
     1: "o200k_base",
@@ -21,6 +23,29 @@ PYTHON_COMPATIBILITY = 0
 DEFAULT_ARTIFACT = Path(__file__).resolve().parents[1] / ".artifacts/r50k/python.bin"
 LOGGER = logging.getLogger("bpe2regex.example.python")
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+def rank_code_width(token_count: int) -> int:
+    if token_count <= 0:
+        raise ValueError("token count must be positive")
+    width = 1
+    capacity = RANK_RADIX
+    while capacity < token_count:
+        width += 1
+        capacity *= RANK_RADIX
+    return width
+
+
+def encode_rank(rank: int, width: int) -> bytes:
+    if width <= 0:
+        raise ValueError("rank width must be positive")
+    if not 0 <= rank < RANK_RADIX**width:
+        raise ValueError(f"rank {rank} does not fit in {width} base62 digits")
+    encoded = bytearray((RANK_ALPHABET[0],)) * width
+    for position in range(width - 1, -1, -1):
+        rank, digit = divmod(rank, RANK_RADIX)
+        encoded[position] = RANK_ALPHABET[digit]
+    return bytes(encoded)
 
 
 class BinaryReader:
@@ -110,7 +135,7 @@ def decode_artifact(
     if (
         token_count <= base_token_count
         or base_token_count != 256
-        or rank_width != len(str(token_count - 1))
+        or rank_width != rank_code_width(token_count)
     ):
         raise ValueError("invalid regex artifact dimensions")
     return (
@@ -189,7 +214,10 @@ class RegexProgram:
         cached = self.merge_cache.get(key)
         if cached is not None:
             return cached
-        encoded = f"{left:0{self.rank_width}d},{right:0{self.rank_width}d}".encode()
+        encoded = encode_rank(left, self.rank_width) + encode_rank(
+            right,
+            self.rank_width,
+        )
         match = self.merge_pattern.fullmatch(encoded)
         if match is None:
             return None
