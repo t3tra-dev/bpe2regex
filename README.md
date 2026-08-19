@@ -133,3 +133,7 @@ make -C examples verify
 # 既存artifactに対するクロス言語比較だけを実行
 uv run python tests/cross_language.py
 ```
+
+## License
+
+このプロジェクトは MIT License の下でライセンスされています.
