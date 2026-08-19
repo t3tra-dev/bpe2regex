@@ -258,7 +258,7 @@ function decodeArtifact(path) {
   };
 }
 
-export class ECMAScriptRegexBPE {
+export class RegexBPE {
   constructor(data) {
     this.encoding = data.encoding;
     this.tokenCount = data.tokenCount;
@@ -529,7 +529,7 @@ export class ECMAScriptRegexBPE {
 }
 
 export function loadECMAScriptProgram(path) {
-  return new ECMAScriptRegexBPE(decodeArtifact(path));
+  return new RegexBPE(decodeArtifact(path));
 }
 
 function equalIds(actual, expected) {

@@ -136,6 +136,23 @@ make -C examples run ARGS='こんにちは, 世界\!'
 make -C examples run ARGS='--verify'
 ```
 
+## Browser demo
+
+[examples/web](examples/web) は外部ライブラリを使わず, ブラウザ標準の `DecompressionStream` / `RegExp` / `TextEncoder` だけで ECMAScript artifactを読み込むデモです.
+artifactの取得・展開, RegExp compile, tokenize, benchmarkはWeb Worker内で直列実行します.
+
+https://t3tra-dev.github.io/bpe2regex/
+
+repository root を HTTP 配信してローカルで確認する場合は, artifact path を query で指定できます.
+
+```bash
+python3 -m http.server 8000
+```
+
+```text
+http://localhost:8000/examples/web/?artifacts=../../.artifacts/
+```
+
 ## 開発時検証
 
 ```bash

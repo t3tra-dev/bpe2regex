@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="bpe2regex の ECMAScript artifact をブラウザ上で試せるデモ"
+    />
+    <title>bpe2regex - browser demo</title>
+    <style>
+      :root {
+        --paper: #fff;
+        --page: #f1f1ee;
+        --text: #222;
+        --muted: #666;
+        --line: #c9c9c4;
+        --soft-line: #e4e4df;
+        --accent: #b31b1b;
+        --accent-dark: #7f1111;
+        --soft-accent: #f7eded;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        background: var(--page);
+        color: var(--text);
+        font-family:
+          "Lucida Sans", "Lucida Sans Regular", "Lucida Grande",
+          "Lucida Sans Unicode", Geneva, Verdana, sans-serif;
+        font-size: 16px;
+        line-height: 1.5;
+      }
+
+      a {
+        color: var(--accent-dark);
+      }
+
+      code,
+      select,
+      textarea,
+      .metric dd,
+      .count,
+      .token {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      main {
+        width: min(960px, calc(100% - 2rem));
+        margin: 1.5rem auto 3rem;
+        border: 1px solid var(--line);
+        background: var(--paper);
+      }
+
+      .paper-header,
+      .demo,
+      footer {
+        padding-right: clamp(1rem, 4vw, 3rem);
+        padding-left: clamp(1rem, 4vw, 3rem);
+      }
+
+      .paper-header {
+        padding-top: 2.25rem;
+        padding-bottom: 1.25rem;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(1.8rem, 5vw, 2.6rem);
+        font-weight: 400;
+        line-height: 1.15;
+      }
+
+      .byline {
+        margin: 0.8rem 0 0;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      h2 {
+        margin: 0 0 0.45rem;
+        font-size: 1.12rem;
+      }
+
+      .demo {
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+        border-top: 1px solid var(--line);
+      }
+
+      .controls {
+        margin-top: 1rem;
+        border: 1px solid var(--line);
+        background: #f8f8f6;
+        padding: 1rem;
+      }
+
+      .encoding-field {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 0.9rem;
+      }
+
+      label {
+        font-weight: 700;
+      }
+
+      select,
+      textarea {
+        border: 1px solid #888;
+        border-radius: 0;
+        background: #fff;
+        color: var(--text);
+        font-size: 0.9rem;
+      }
+
+      select {
+        min-width: 13rem;
+        padding: 0.35rem 1.8rem 0.35rem 0.45rem;
+      }
+
+      textarea {
+        display: block;
+        width: 100%;
+        min-height: 4rem;
+        resize: vertical;
+        margin-top: 0.35rem;
+        padding: 0.7rem;
+        line-height: 1.5;
+      }
+
+      textarea:focus,
+      select:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
+      select:disabled {
+        cursor: wait;
+        opacity: 0.6;
+      }
+
+      .status {
+        margin-top: 1rem;
+        border-left: 4px solid #999;
+        background: #f4f4f1;
+        padding: 0.55rem 0.75rem;
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+
+      .status[data-state="ready"] {
+        border-left-color: var(--accent);
+      }
+
+      .status[data-state="error"] {
+        border-left-color: var(--accent);
+        background: var(--soft-accent);
+        color: var(--accent-dark);
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin: 1rem 0 0;
+        border-top: 1px solid var(--line);
+        border-left: 1px solid var(--line);
+      }
+
+      .metric {
+        min-width: 0;
+        border-right: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        padding: 0.65rem 0.75rem;
+      }
+
+      .metric dt {
+        color: var(--muted);
+        font-size: 0.75rem;
+      }
+
+      .metric dd {
+        overflow: hidden;
+        margin: 0.2rem 0 0;
+        font-size: 0.87rem;
+        font-weight: 700;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .results {
+        margin-top: 1.35rem;
+      }
+
+      .result-heading {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 1rem;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 0.35rem;
+      }
+
+      .result-heading h2 {
+        margin: 0;
+      }
+
+      .count {
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      .token-list {
+        display: flex;
+        min-height: 3rem;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        margin: 0;
+        padding: 0.8rem 0 0;
+        list-style: none;
+      }
+
+      .token {
+        display: inline-grid;
+        grid-template-columns: auto auto;
+        border: 1px solid #aaa;
+        background: #fafafa;
+        font-size: 0.85rem;
+      }
+
+      .token-id,
+      .token-text {
+        padding: 0.25rem 0.4rem;
+      }
+
+      .token-id {
+        border-right: 1px solid #bbb;
+        background: var(--soft-accent);
+        color: var(--accent-dark);
+        font-weight: 700;
+      }
+
+      .token-text {
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+      }
+
+      .empty {
+        color: var(--muted);
+        font-style: italic;
+      }
+
+      footer {
+        border-top: 1px solid var(--soft-line);
+        padding-top: 1rem;
+        padding-bottom: 1.25rem;
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      @media (max-width: 700px) {
+        main {
+          width: 100%;
+          margin-top: 0;
+          border-right: 0;
+          border-left: 0;
+        }
+
+        .metrics {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .encoding-field {
+          align-items: stretch;
+          flex-direction: column;
+          gap: 0.35rem;
+        }
+
+        select {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <article>
+        <header class="paper-header">
+          <h1>bpe2regex</h1>
+          <p class="byline">Exact BPE tokenization with ECMAScript RegExp</p>
+        </header>
+        <section class="demo" aria-labelledby="demo-title">
+          <div class="controls">
+            <div class="encoding-field">
+              <label for="encoding">Encoding:</label>
+              <select id="encoding" name="encoding">
+                <option value="r50k">r50k_base</option>
+                <option value="p50k">p50k_base</option>
+                <option value="cl100k">cl100k_base</option>
+                <option value="o200k" selected>o200k_base</option>
+              </select>
+            </div>
+
+            <label for="input">Input text</label>
+            <textarea id="input" name="input" spellcheck="false">
+こんにちは、世界！ bpe2regex runs entirely in your browser.</textarea
+            >
+          </div>
+
+          <div
+            id="status"
+            class="status"
+            data-state="loading"
+            role="status"
+            aria-live="polite"
+          >
+            <span id="status-text">artifactを読み込んでいます…</span>
+          </div>
+
+          <dl class="metrics">
+            <div class="metric">
+              <dt>Fetched binary</dt>
+              <dd id="binary-size">—</dd>
+            </div>
+            <div class="metric">
+              <dt>Inflated container</dt>
+              <dd id="container-size">—</dd>
+            </div>
+            <div class="metric">
+              <dt>RegExp source</dt>
+              <dd id="regexp-size">—</dd>
+            </div>
+            <div class="metric">
+              <dt>Load + compile</dt>
+              <dd id="load-time">—</dd>
+            </div>
+            <div class="metric">
+              <dt>First tokenize</dt>
+              <dd id="first-time">—</dd>
+            </div>
+            <div class="metric">
+              <dt>Warm average</dt>
+              <dd id="average-time">—</dd>
+            </div>
+            <div class="metric">
+              <dt>Throughput</dt>
+              <dd id="throughput">—</dd>
+            </div>
+            <div class="metric">
+              <dt>Benchmark runs</dt>
+              <dd id="benchmark-runs">—</dd>
+            </div>
+          </dl>
+
+          <div class="results">
+            <div class="result-heading">
+              <h2>Tokens</h2>
+              <span id="token-count" class="count">—</span>
+            </div>
+            <ol id="tokens" class="token-list">
+              <li class="empty">artifactの読み込みを待っています</li>
+            </ol>
+          </div>
+        </section>
+      </article>
+
+      <footer>
+        時間はこのブラウザ上の <code>performance.now()</code> による参考値です。
+        RegExp size は展開した artifact に含まれる全 pattern source の UTF-8
+        byte 数です。
+        <a href="https://github.com/t3tra-dev/bpe2regex">Source on GitHub</a>
+      </footer>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
