@@ -5,9 +5,11 @@ from itertools import pairwise
 from math import isqrt
 from typing import Any
 
-from ..rank_codec import RANK_ALPHABET, encode_rank_pair, rank_code_width
-from ..regex_ast import EMPTY, NEVER, RegexAST, render_regex
-from ..tagged_fst import TaggedFST
+from ...rank_codec import RANK_ALPHABET, encode_rank_pair, rank_code_width
+from ...tagged_fst import TaggedFST
+from ..ops import EPSILON, NEVER, Op
+from ..source import render_regex
+from ..tagged_source import render_tagged_regex
 
 type ByteEscape = Callable[[int], str]
 
@@ -188,8 +190,8 @@ def _emit_rank_bits(
     *,
     escape: ByteEscape,
 ) -> tuple[str, ...]:
-    def bit_output(bit: int) -> Callable[[int], RegexAST]:
-        return lambda rank: EMPTY if rank & (1 << bit) else NEVER
+    def bit_output(bit: int) -> Callable[[int], Op]:
+        return lambda rank: EPSILON if rank & (1 << bit) else NEVER
 
     return tuple(
         render_regex(
@@ -262,7 +264,7 @@ def emit_sources(
 
     def render_fragment(fragment: _FrontierFragment) -> str:
         ranks: list[int] = []
-        source = render_regex(
+        source = render_tagged_regex(
             merge_fst.to_regex(start=fragment.state),
             escape_byte=_rank_stream_escape,
             emit_tag=lambda rank: _anonymous_capture(ranks, rank),

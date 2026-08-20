@@ -1,3 +1,5 @@
+"""Engine-specific target emitters built on REIR."""
+
 from collections.abc import Sequence
 from enum import Enum
 from typing import Any, Literal, overload

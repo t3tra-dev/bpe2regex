@@ -1,9 +1,10 @@
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
-from .regex_ast import RegexAST, alternate, concat, literal, tagged
+from .reir import Op
+from .reir.tagged import TAGGED_BUILDER, tagged
 
-type OutputLowering = Callable[[int], RegexAST]
+type OutputLowering = Callable[[int], Op]
 
 
 @dataclass(slots=True)
@@ -130,28 +131,31 @@ class TaggedFST:
         lower_output: OutputLowering = tagged,
         *,
         start: int | None = None,
-    ) -> RegexAST:
-        """Lower the transducer to a prefix-factored, tagged regex AST."""
+    ) -> Op:
+        """Lower the transducer to prefix-factored, tagged REIR."""
 
         start_state = self.start if start is None else start
         if not 0 <= start_state < len(self.states):
             raise ValueError("the regex start state is out of range")
 
-        cached: dict[int, RegexAST] = {}
+        cached: dict[int, Op] = {}
 
-        def lower_state(state_index: int) -> RegexAST:
+        def lower_state(state_index: int) -> Op:
             known = cached.get(state_index)
             if known is not None:
                 return known
             state = self.states[state_index]
-            alternatives: list[RegexAST] = []
+            alternatives: list[Op] = []
             if state.output is not None:
                 alternatives.append(lower_output(state.output))
             alternatives.extend(
-                concat(literal(bytes((symbol,))), lower_state(target))
+                TAGGED_BUILDER.concat(
+                    TAGGED_BUILDER.literal(bytes((symbol,))),
+                    lower_state(target),
+                )
                 for symbol, target in state.transitions
             )
-            result = alternate(*alternatives)
+            result = TAGGED_BUILDER.alternate(*alternatives)
             cached[state_index] = result
             return result
 

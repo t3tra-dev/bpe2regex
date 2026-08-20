@@ -12,11 +12,11 @@ from .binary import (
     PYTHON_ARTIFACT_FILENAME,
     encode_artifact,
 )
-from .emitter import Compatibility, emit_regex_sources
-from .emitter.ecmascript import validate_sources as validate_ecmascript_sources
 from .encoding import Encoding
 from .pretokenize import PreTokenizer
 from .regex_program import RegexBPE
+from .reir.emitter import Compatibility, emit_regex_sources
+from .reir.emitter.ecmascript import validate_sources as validate_ecmascript_sources
 from .unicode_data import build_unicode_class_data
 
 Progress = Callable[[str], None]

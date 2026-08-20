@@ -2,9 +2,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ..rank_codec import RANK_ALPHABET, encode_rank_pair, rank_code_width
-from ..regex_ast import render_regex
-from ..tagged_fst import TaggedFST
+from ...rank_codec import RANK_ALPHABET, encode_rank_pair, rank_code_width
+from ...tagged_fst import TaggedFST
+from ..tagged_source import render_tagged_regex
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +60,7 @@ def emit_sources(
         if token is not None
     )
     byte_capture_ranks: list[int] = []
-    byte_to_rank = render_regex(
+    byte_to_rank = render_tagged_regex(
         byte_fst.to_regex(),
         escape_byte=_byte_escape,
         emit_tag=lambda rank: _anonymous_capture(byte_capture_ranks, rank),
@@ -85,7 +85,7 @@ def emit_sources(
 
     merge_fst = TaggedFST.from_pairs(merge_pairs)
     merge_capture_ranks: list[int] = []
-    merge_pair = render_regex(
+    merge_pair = render_tagged_regex(
         merge_fst.to_regex(),
         escape_byte=_rank_stream_escape,
         emit_tag=lambda rank: _anonymous_capture(merge_capture_ranks, rank),
