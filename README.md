@@ -10,16 +10,16 @@ BPE tokenizer を正規表現に変換する研究用プロジェクトです.
 .artifacts/
 ├─ r50k/
 │  ├─ python.bin        211,297 bytes
-│  └─ ecmascript.bin    221,395 bytes
+│  └─ ecmascript.bin    221,079 bytes
 ├─ p50k/
 │  ├─ python.bin        211,384 bytes
-│  └─ ecmascript.bin    221,513 bytes
+│  └─ ecmascript.bin    221,205 bytes
 ├─ cl100k/
 │  ├─ python.bin        469,209 bytes
-│  └─ ecmascript.bin    485,412 bytes
+│  └─ ecmascript.bin    485,052 bytes
 └─ o200k/
    ├─ python.bin        988,147 bytes
-   └─ ecmascript.bin  1,014,885 bytes
+   └─ ecmascript.bin  1,014,543 bytes
 ```
 
 ## Binary 形式
@@ -85,6 +85,16 @@ Repeat(body, min, max | None)
 `Tag(rank)` は pure REIR に含めず `bpe2regex.reir.tagged` の出力付き dialect に分離しています. `TaggedConcat` / `TaggedAlternate` が出力順を持つ graph を構成し, core `Concat` / `Alternate` は constructor で `PureOp` 以外の child を拒否します. tagged builder は branch order と duplicate を保持し, pure subtree だけを core builder へ委譲します. `TaggedFST` はこの dialect へ lowering され, `TaggedRegexSourceLowerer` が `Tag` を匿名 capture と capture-rank side table に変換します.
 
 `RewritePattern` / `PatternRewriter`, `OperationPass` / `PassManager`, `Lowerer` / `OpLowerer` はすべて追加実装・登録可能です. engine 別 emitter も `bpe2regex.reir.emitter` 配下に置き, FST から source regex までを REIR コンパイラの責務としてまとめています.
+
+`CandidateGenerator` は同値な変換候補だけを生成し, `CostModel` は候補評価を rewrite から分離します. `MinimumCostSelector` は cost model の辞書式 key が最小の候補を選び, 完全な tie では入力順で最初の候補を保持します. `CandidateSelectionPass` がこの三者を接続するため, search transformation を通常の `RegexCompiler` pipeline に追加できます.
+
+`StructuralCostModel` は operation 数と literal byte 数, `SourceSizeCostModel` は target source の UTF-8 byte 数, `DeflatedSourceCostModel` は単独 source の raw-DEFLATE byte 数を評価します. artifact 全体の serialized cost を評価する場合は `FunctionalCostModel` に engine 固有の serializer callback と比較 key を渡します. `benchmark_compiler` は pass と lowering を含む時間, 最終 IR の構造, source 長, raw-DEFLATE 長を一つの結果として記録します.
+
+### Canonical tokenizer の matching 契約
+
+次段の canonical-token compiler が生成する monster regex は, 一回の `fullmatch` から全 token 境界を返すものとはしません. pre-tokenizer が生成した各 piece に対し, 同一の compiled regex を現在位置へ anchored `match` し, 一回の非空 match から一つの token rank と終端位置を送出します. driver は match 終端へ位置を進め, piece 全体を消費するまでこれを繰り返します.
+
+この driver に許す control flow は match の反復と結果の送出だけです. merge-pair lookup, rank priority queue, merge rule の適用判断は regex 側へ compile し, runtime には残しません. 各 match は必ず一 byte 以上進み, 同じ入力位置では一意の canonical token を選ぶことを compiler の意味論とします.
 
 ECMAScript emitter は merge-pair FST の prefix-free な trie frontier をボトムアップ DP で選びます. 各 suffix regex のキャプチャ数をマージ規則数の平方根を切り上げた値以下に制限しながら, prefix・regex・side-table 境界の非圧縮 serialized cost 合計が最小になる cut を採用します. 共通 prefix は regex から除いて dispatch table へ移すため, modulo hash bucket で失われていた trie の局所性を維持できます.
 

@@ -10,14 +10,24 @@ from bpe2regex.reir import (
     NEVER,
     Alternate,
     AnalysisManager,
+    CandidateGenerator,
+    CandidateSelectionPass,
+    CandidateSelector,
     CanonicalizePass,
     CharSet,
     Concat,
+    CostModel,
     DataFlowAnalysis,
+    DeflatedSourceCostModel,
+    FunctionalCandidateGenerator,
+    FunctionalCostModel,
     GreedyRewriteDriver,
     Literal,
+    LoweredSizeCost,
+    LoweredSizeCostModel,
     Lowerer,
     LoweringContext,
+    MinimumCostSelector,
     Op,
     OperationPass,
     OpLowerer,
@@ -29,11 +39,16 @@ from bpe2regex.reir import (
     RegexSourceLowerer,
     Repeat,
     RewritePattern,
+    SourceSizeCostModel,
+    StructuralCost,
+    StructuralCostModel,
     StructureDiscoveryPass,
     alternate,
+    benchmark_compiler,
     charset,
     concat,
     literal,
+    raw_deflate_size,
     render_regex,
     repeat,
 )
@@ -111,6 +126,9 @@ class REIRInfrastructureTests(unittest.TestCase):
             OperationPass,
             Lowerer,
             OpLowerer,
+            CostModel,
+            CandidateGenerator,
+            CandidateSelector,
         ):
             with self.subTest(extension_point=extension_point.__name__):
                 self.assertTrue(inspect.isabstract(extension_point))
@@ -152,6 +170,110 @@ class REIRInfrastructureTests(unittest.TestCase):
         result = compiler.run(raw)
         self.assertEqual(result.ir, literal(b"ab"))
         self.assertEqual(result.output, "ab")
+
+
+class REIRCostAndBenchmarkTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.lowerer = RegexSourceLowerer(escape_byte=_ascii_escape)
+
+    def test_structural_and_lowered_cost_models_share_stable_tie_breakers(
+        self,
+    ) -> None:
+        expression = concat(literal(b"ab"), repeat(literal(b"c"), 0, 1))
+        structural = StructuralCostModel().evaluate(expression)
+        self.assertEqual(structural, StructuralCost(4, 3))
+
+        source = SourceSizeCostModel(self.lowerer).evaluate(expression)
+        self.assertEqual(source, LoweredSizeCost(len("abc?"), 4, 3))
+
+        deflated = DeflatedSourceCostModel(self.lowerer).evaluate(expression)
+        self.assertEqual(
+            deflated,
+            LoweredSizeCost(raw_deflate_size("abc?"), 4, 3),
+        )
+
+    def test_functional_cost_model_can_measure_complete_external_context(self) -> None:
+        model = FunctionalCostModel(
+            lambda root, analyses: (
+                analyses.get(RegexPropertiesAnalysis, root).operation_count,
+                render_regex(root, escape_byte=_ascii_escape),
+            ),
+            key=lambda cost: (cost[0], len(cost[1])),
+        )
+        self.assertEqual(model.evaluate(literal(b"abc")), (1, "abc"))
+
+    def test_minimum_selector_uses_cost_and_preserves_the_first_tie(self) -> None:
+        original = alternate(literal(b"fooa"), literal(b"foob"))
+        factored = concat(literal(b"foo"), charset(b"ab"))
+        selector = MinimumCostSelector()
+        model = SourceSizeCostModel(self.lowerer)
+
+        selected = selector.select((original, factored), model)
+        self.assertEqual(selected.root, factored)
+        self.assertEqual(selected.ordinal, 1)
+        self.assertEqual(selected.cost.size, len("foo[ab]"))
+
+        tied = selector.select((literal(b"a"), literal(b"b")), model)
+        self.assertEqual(tied.root, literal(b"a"))
+        self.assertEqual(tied.ordinal, 0)
+
+    def test_minimum_selector_rejects_an_empty_candidate_set(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            MinimumCostSelector().select((), StructuralCostModel())
+
+    def test_candidate_selection_pass_connects_generator_cost_and_compiler(
+        self,
+    ) -> None:
+        original = alternate(literal(b"fooa"), literal(b"foob"))
+        factored = concat(literal(b"foo"), charset(b"ab"))
+        generator = FunctionalCandidateGenerator(lambda root, analyses: (factored,))
+        compiler = RegexCompiler(
+            self.lowerer,
+            passes=(
+                CandidateSelectionPass(
+                    (generator,),
+                    SourceSizeCostModel(self.lowerer),
+                ),
+            ),
+        )
+        result = compiler.run(original)
+        self.assertEqual(result.ir, factored)
+        self.assertEqual(result.output, "foo[ab]")
+
+    def test_lowered_cost_rejects_a_negative_measurement(self) -> None:
+        model = LoweredSizeCostModel(self.lowerer, lambda source: -len(source))
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            model.evaluate(literal(b"abc"))
+
+    def test_compiler_benchmark_reports_optimized_ir_source_and_timing(self) -> None:
+        expression = alternate(literal(b"foo"), literal(b"foobar"))
+        compiler = RegexCompiler(
+            self.lowerer,
+            passes=(StructureDiscoveryPass(),),
+        )
+        timestamps = iter((10.0, 12.0))
+        result = benchmark_compiler(
+            expression,
+            compiler,
+            iterations=2,
+            clock=lambda: next(timestamps),
+        )
+        self.assertEqual(result.compilation.output, "foo(?:bar)?")
+        self.assertEqual(result.metrics.iterations, 2)
+        self.assertEqual(result.metrics.seconds_per_iteration, 1.0)
+        self.assertEqual(result.metrics.operation_count, 4)
+        self.assertEqual(result.metrics.literal_bytes, 6)
+        self.assertEqual(result.metrics.source_characters, len("foo(?:bar)?"))
+        self.assertEqual(result.metrics.source_bytes, len(b"foo(?:bar)?"))
+        self.assertEqual(
+            result.metrics.deflated_source_bytes,
+            raw_deflate_size("foo(?:bar)?"),
+        )
+
+    def test_compiler_benchmark_requires_a_positive_iteration_count(self) -> None:
+        compiler = RegexCompiler(self.lowerer)
+        with self.assertRaisesRegex(ValueError, "positive"):
+            benchmark_compiler(literal(b"a"), compiler, iterations=0)
 
 
 class PureRegexCanonicalizationTests(unittest.TestCase):
