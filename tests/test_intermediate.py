@@ -1,15 +1,13 @@
 import re
 import unittest
 
-from bpe2regex.regex_ast import (
-    EMPTY,
+from bpe2regex.reir import (
+    EPSILON,
     NEVER,
-    alternate,
-    concat,
-    literal,
     render_regex,
-    tagged,
 )
+from bpe2regex.reir.tagged import TAGGED_BUILDER, tagged
+from bpe2regex.reir.tagged_source import render_tagged_regex
 from bpe2regex.tagged_fst import TaggedFST, TaggedState
 
 
@@ -20,14 +18,19 @@ def _ascii_escape(byte: int) -> str:
     )
 
 
-class RegexASTTests(unittest.TestCase):
+class REIRBuilderTests(unittest.TestCase):
     def test_constructors_normalize_without_losing_tags(self) -> None:
-        expression = alternate(
+        expression = TAGGED_BUILDER.alternate(
             NEVER,
-            concat(literal(b"a"), EMPTY, literal(b"b"), tagged(3)),
-            concat(literal(b"c"), tagged(4)),
+            TAGGED_BUILDER.concat(
+                TAGGED_BUILDER.literal(b"a"),
+                EPSILON,
+                TAGGED_BUILDER.literal(b"b"),
+                tagged(3),
+            ),
+            TAGGED_BUILDER.concat(TAGGED_BUILDER.literal(b"c"), tagged(4)),
         )
-        source = render_regex(
+        source = render_tagged_regex(
             expression,
             escape_byte=_ascii_escape,
             emit_tag=lambda rank: f"(?P<t{rank}>)",
@@ -36,7 +39,7 @@ class RegexASTTests(unittest.TestCase):
 
     def test_tag_requires_an_explicit_target_lowering(self) -> None:
         with self.assertRaisesRegex(ValueError, "tag emitter"):
-            render_regex(tagged(1), escape_byte=_ascii_escape)
+            render_tagged_regex(tagged(1), escape_byte=_ascii_escape)
 
 
 class TaggedFSTTests(unittest.TestCase):
@@ -53,7 +56,7 @@ class TaggedFSTTests(unittest.TestCase):
                 self.assertIsNone(self.fst.transduce(key))
 
     def test_tagged_regex_preserves_inputs_and_outputs(self) -> None:
-        source = render_regex(
+        source = render_tagged_regex(
             self.fst.to_regex(),
             escape_byte=_ascii_escape,
             emit_tag=lambda rank: f"(?P<t{rank}>)",
@@ -72,7 +75,7 @@ class TaggedFSTTests(unittest.TestCase):
             re.compile(
                 render_regex(
                     self.fst.to_regex(
-                        lambda rank, bit=bit: EMPTY if rank & (1 << bit) else NEVER
+                        lambda rank, bit=bit: EPSILON if rank & (1 << bit) else NEVER
                     ),
                     escape_byte=_ascii_escape,
                 ).encode("ascii")
@@ -90,7 +93,7 @@ class TaggedFSTTests(unittest.TestCase):
 
     def test_regex_can_start_at_a_trie_frontier_state(self) -> None:
         frontier_state = dict(self.fst.states[self.fst.start].transitions)[ord("c")]
-        source = render_regex(
+        source = render_tagged_regex(
             self.fst.to_regex(start=frontier_state),
             escape_byte=_ascii_escape,
             emit_tag=lambda rank: f"(?P<t{rank}>)",

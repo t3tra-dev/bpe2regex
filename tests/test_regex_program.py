@@ -8,16 +8,16 @@ from bpe2regex.binary import (
     decode_python_artifact,
     encode_artifact,
 )
-from bpe2regex.emitter import Compatibility, emit_regex_sources
-from bpe2regex.emitter.ecmascript import (
-    RegexSources as ECMAScriptRegexSources,
-)
-from bpe2regex.emitter.ecmascript import (
-    validate_sources as validate_ecmascript_sources,
-)
-from bpe2regex.emitter.python import RegexSources as PythonRegexSources
 from bpe2regex.encoding import Encoding
 from bpe2regex.regex_program import RegexBPE
+from bpe2regex.reir.emitter import Compatibility, emit_regex_sources
+from bpe2regex.reir.emitter.ecmascript import (
+    RegexSources as ECMAScriptRegexSources,
+)
+from bpe2regex.reir.emitter.ecmascript import (
+    validate_sources as validate_ecmascript_sources,
+)
+from bpe2regex.reir.emitter.python import RegexSources as PythonRegexSources
 from bpe2regex.vocabulary import recover_merge_parents, reference_bpe_ids
 
 

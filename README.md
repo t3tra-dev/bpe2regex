@@ -64,11 +64,27 @@ result: BuildResult[R50K]
 
 ## Compiler IR
 
-regex emitter は文字列へ直接 trie を書き出さず, 2 段階の中間表現を経由します.
+regex emitter は文字列へ直接 trie を書き出さず, `bpe2regex.reir` のコンパイラインフラストラクチャを経由します.
 
-1. `TaggedFST` は byte 列を入力, token rank を terminal 出力とする決定的・非巡回 transducer です.
-2. engine 非依存の regex AST は `Literal`, `Concat`, `Alternate`, `Tag`, `Empty`, `Never` で有限写像を表現します.
-3. Python / ECMAScript rendererは `Tag` を匿名captureへloweringし, capture出現順のrank side tableを同時に生成します. ECMAScriptのbase-rank bit regexでは同じFSTの出力をbit membershipへloweringします.
+pure REIR は byte alphabet `Σ = {0, ..., 255}` 上の次の 7 op だけで構成します.
+
+```text
+Never
+Epsilon
+CharSet(byte bitset)
+Literal(bytes)
+Concat(children...)
+Alternate(children...)
+Repeat(body, min, max | None)
+```
+
+`CharSet` は 256-bit の canonical bitset として保持し, source lowering 時に singleton・列挙・range の短い表現を選びます. `Alternate` は pure semantics 上で flat / sorted / unique にし, 1-byte literal と `CharSet` の union を一つの `CharSet` へまとめます. `Concat` は flat 化, `Epsilon` 除去, `Never` absorption, adjacent literal / repeat foldingを行います. `Repeat` は trivial bounds, `Epsilon` / `Never`, nested closure を fold します.
+
+`StructureDiscoveryPass` は canonicalization と分離し, n-ary alternative の longest common prefix / suffix factoring と, contiguous な同一 expression の冪 union を bounded `Repeat` へ復元します. `RegexPropertiesAnalysis` は nullability, first / last byte set, min / max width, structural cost をボトムアップ伝播・キャッシュします.
+
+`Tag(rank)` は pure REIR に含めず `bpe2regex.reir.tagged` の出力付き dialect に分離しています. `TaggedConcat` / `TaggedAlternate` が出力順を持つ graph を構成し, core `Concat` / `Alternate` は constructor で `PureOp` 以外の child を拒否します. tagged builder は branch order と duplicate を保持し, pure subtree だけを core builder へ委譲します. `TaggedFST` はこの dialect へ lowering され, `TaggedRegexSourceLowerer` が `Tag` を匿名 capture と capture-rank side table に変換します.
+
+`RewritePattern` / `PatternRewriter`, `OperationPass` / `PassManager`, `Lowerer` / `OpLowerer` はすべて追加実装・登録可能です. engine 別 emitter も `bpe2regex.reir.emitter` 配下に置き, FST から source regex までを REIR コンパイラの責務としてまとめています.
 
 ECMAScript emitter は merge-pair FST の prefix-free な trie frontier をボトムアップ DP で選びます. 各 suffix regex のキャプチャ数をマージ規則数の平方根を切り上げた値以下に制限しながら, prefix・regex・side-table 境界の非圧縮 serialized cost 合計が最小になる cut を採用します. 共通 prefix は regex から除いて dispatch table へ移すため, modulo hash bucket で失われていた trie の局所性を維持できます.
 

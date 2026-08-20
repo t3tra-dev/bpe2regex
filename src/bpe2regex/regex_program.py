@@ -5,10 +5,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from .binary import PYTHON_ARTIFACT_FILENAME, decode_python_artifact
-from .emitter.python import RegexSources as PythonRegexSources
 from .encoding import Encoding
 from .match import TokenMatch
 from .rank_codec import encode_rank_pair, rank_code_width
+from .reir.emitter.python import RegexSources as PythonRegexSources
 
 if TYPE_CHECKING:
     from .tokenizer import Tokenizer

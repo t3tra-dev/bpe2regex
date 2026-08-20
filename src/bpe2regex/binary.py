@@ -1,10 +1,10 @@
 import zlib
 from collections.abc import Sequence
 
-from .emitter import Compatibility, RegexSources
-from .emitter.ecmascript import RegexSources as ECMAScriptRegexSources
-from .emitter.python import RegexSources as PythonRegexSources
 from .encoding import Encoding
+from .reir.emitter import Compatibility, RegexSources
+from .reir.emitter.ecmascript import RegexSources as ECMAScriptRegexSources
+from .reir.emitter.python import RegexSources as PythonRegexSources
 
 PYTHON_ARTIFACT_FILENAME = "python.bin"
 ECMASCRIPT_ARTIFACT_FILENAME = "ecmascript.bin"
