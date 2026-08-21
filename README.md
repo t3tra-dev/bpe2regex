@@ -90,6 +90,8 @@ Repeat(body, min, max | None)
 
 `StructuralCostModel` は operation 数と literal byte 数, `SourceSizeCostModel` は target source の UTF-8 byte 数, `DeflatedSourceCostModel` は単独 source の raw-DEFLATE byte 数を評価します. artifact 全体の serialized cost を評価する場合は `FunctionalCostModel` に engine 固有の serializer callback と比較 key を渡します. `benchmark_compiler` は pass と lowering を含む時間, 最終 IR の構造, source 長, raw-DEFLATE 長を一つの結果として記録します.
 
+`DerivativeEngine` は7つのpure opに対するBrzozowski derivativeを`(op identity, byte)`単位でmemoizeします. `group()`は`First(R)`に含まれるbyteだけを評価し, canonicalization後のresidual IRがstructurally equalなbyteを一つの`CharSet`へまとめます. DFA equivalenceによるsemantic groupingはまだ行いません. この段階ではderivative展開をrewrite候補にはせず, language semanticsとresidual partitionだけを提供します.
+
 ### Canonical tokenizer の matching 契約
 
 次段の canonical-token compiler が生成する monster regex は, 一回の `fullmatch` から全 token 境界を返すものとはしません. pre-tokenizer が生成した各 piece に対し, 同一の compiled regex を現在位置へ anchored `match` し, 一回の非空 match から一つの token rank と終端位置を送出します. driver は match 終端へ位置を進め, piece 全体を消費するまでこれを繰り返します.

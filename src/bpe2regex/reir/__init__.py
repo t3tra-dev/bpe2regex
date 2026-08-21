@@ -40,6 +40,12 @@ from .cost import (
     raw_deflate_size,
     utf8_size,
 )
+from .derivative import (
+    DerivativeEngine,
+    DerivativeGroup,
+    derivative,
+    group_derivatives,
+)
 from .lowering import (
     FunctionalOpLowerer,
     Lowerer,
@@ -130,6 +136,8 @@ __all__ = [
     "CostedCandidate",
     "DataFlowAnalysis",
     "DeflatedSourceCostModel",
+    "DerivativeEngine",
+    "DerivativeGroup",
     "DiscoverRepeatAlternativesPattern",
     "Epsilon",
     "FactorCommonAffixesPattern",
@@ -177,6 +185,8 @@ __all__ = [
     "benchmark_compiler",
     "charset",
     "concat",
+    "derivative",
+    "group_derivatives",
     "literal",
     "raw_deflate_size",
     "render_regex",
