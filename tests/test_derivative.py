@@ -2,20 +2,30 @@ import itertools
 import random
 import re
 import unittest
+import zlib
 
 from bpe2regex.reir import (
     EPSILON,
     NEVER,
+    AnalysisManager,
+    ArtifactSizeCostModel,
+    CandidateSelectionPass,
     CharSet,
+    CostModel,
+    DeflatedSourceCostModel,
     DerivativeEngine,
+    DerivativeFactoringGenerator,
+    LoweredSizeCost,
     Op,
     RegexCompiler,
     RegexSourceLowerer,
     Repeat,
+    SourceSizeCostModel,
     alternate,
     charset,
     concat,
     derivative,
+    expand_derivatives,
     group_derivatives,
     literal,
     repeat,
@@ -30,6 +40,36 @@ def _byte_escape(byte: int) -> str:
 def _compile(expression: Op) -> re.Pattern[bytes]:
     compiler = RegexCompiler(RegexSourceLowerer(escape_byte=_byte_escape))
     return re.compile(compiler.compile(expression).encode("ascii"))
+
+
+def _serialize_artifact(source: str) -> bytes:
+    payload = b"B2RX" + source.encode("ascii") + b"rank-side-table"
+    compressor = zlib.compressobj(level=9, wbits=-15)
+    return compressor.compress(payload) + compressor.flush()
+
+
+def _random_expression(randomizer: random.Random, depth: int) -> Op:
+    leaves = (
+        EPSILON,
+        NEVER,
+        literal(b"a"),
+        literal(b"b"),
+        literal(b"ab"),
+        charset(b"ab"),
+    )
+    if depth == 0 or randomizer.randrange(4) == 0:
+        return randomizer.choice(leaves)
+    operation = randomizer.randrange(3)
+    if operation == 0:
+        return concat(*(_random_expression(randomizer, depth - 1) for _ in range(2)))
+    if operation == 1:
+        return alternate(*(_random_expression(randomizer, depth - 1) for _ in range(3)))
+    minimum, maximum = randomizer.choice(((0, 1), (0, 2), (0, None), (1, 3), (2, 4)))
+    return repeat(
+        _random_expression(randomizer, depth - 1),
+        minimum,
+        maximum,
+    )
 
 
 class DerivativeRuleTests(unittest.TestCase):
@@ -166,39 +206,168 @@ class DerivativeGroupingTests(unittest.TestCase):
         self.assertEqual(groups[0].symbols.symbols, frozenset(b"ab"))
         self.assertEqual(groups[0].residual, literal(b"x"))
 
+    def test_all_256_byte_derivatives_select_the_expected_residual(self) -> None:
+        expression = alternate(
+            *(literal(bytes((symbol, symbol ^ 0xFF))) for symbol in range(256))
+        )
+        engine = DerivativeEngine()
+        for symbol in range(256):
+            with self.subTest(symbol=symbol):
+                self.assertEqual(
+                    engine.derive(expression, symbol),
+                    literal(bytes((symbol ^ 0xFF,))),
+                )
+        self.assertEqual(engine.cached_symbols(expression), frozenset(range(256)))
+
+
+class DerivativeFactoringTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.lowerer = RegexSourceLowerer(escape_byte=_byte_escape)
+        self.generator = DerivativeFactoringGenerator()
+
+    def _candidate(self, expression: Op) -> Op:
+        candidates = tuple(self.generator.generate(expression, AnalysisManager()))
+        self.assertEqual(len(candidates), 1)
+        return candidates[0]
+
+    def _compiler(
+        self,
+        cost_model: CostModel[LoweredSizeCost],
+    ) -> RegexCompiler[str]:
+        return RegexCompiler(
+            self.lowerer,
+            passes=(
+                CandidateSelectionPass(
+                    (self.generator,),
+                    cost_model,
+                ),
+            ),
+        )
+
+    def test_expansion_reconstructs_nullable_and_grouped_residuals(self) -> None:
+        tail = literal(b"common-tail")
+        expression = alternate(
+            EPSILON,
+            concat(literal(b"a"), tail),
+            concat(literal(b"b"), tail),
+            literal(b"cx"),
+        )
+        expected = alternate(
+            EPSILON,
+            concat(charset(b"ab"), tail),
+            concat(charset(b"c"), literal(b"x")),
+        )
+        self.assertEqual(DerivativeEngine().expand(expression), expected)
+        self.assertEqual(expand_derivatives(expression), expected)
+        self.assertEqual(self._candidate(expression), expected)
+
+    def test_generator_omits_a_structurally_identical_expansion(self) -> None:
+        expression = charset(b"abc")
+        self.assertEqual(
+            tuple(self.generator.generate(expression, AnalysisManager())),
+            (),
+        )
+
+    def test_source_deflate_and_artifact_costs_select_a_winning_factorization(
+        self,
+    ) -> None:
+        tail = literal(b"a-long-common-residual-with-locality-0123456789")
+        expression = alternate(
+            concat(literal(b"a"), tail),
+            concat(literal(b"b"), tail),
+            literal(b"cx"),
+        )
+        candidate = self._candidate(expression)
+        source_model = SourceSizeCostModel(self.lowerer)
+        deflate_model = DeflatedSourceCostModel(self.lowerer)
+        artifact_model = ArtifactSizeCostModel(
+            self.lowerer,
+            _serialize_artifact,
+        )
+
+        self.assertLess(
+            source_model.key(source_model.evaluate(candidate)),
+            source_model.key(source_model.evaluate(expression)),
+        )
+        self.assertLess(
+            deflate_model.key(deflate_model.evaluate(candidate)),
+            deflate_model.key(deflate_model.evaluate(expression)),
+        )
+        self.assertLess(
+            artifact_model.key(artifact_model.evaluate(candidate)),
+            artifact_model.key(artifact_model.evaluate(expression)),
+        )
+        for model in (source_model, deflate_model, artifact_model):
+            with self.subTest(model=type(model).__name__):
+                result = self._compiler(model).run(expression)
+                self.assertEqual(result.ir, candidate)
+
+    def test_all_cost_models_retain_original_when_expansion_loses(self) -> None:
+        expression = repeat(literal(b"a"), 0, None)
+        source_model = SourceSizeCostModel(self.lowerer)
+        deflate_model = DeflatedSourceCostModel(self.lowerer)
+        artifact_model = ArtifactSizeCostModel(
+            self.lowerer,
+            _serialize_artifact,
+        )
+        for model in (source_model, deflate_model, artifact_model):
+            with self.subTest(model=type(model).__name__):
+                result = self._compiler(model).run(expression)
+                self.assertIs(result.ir, expression)
+
+    def test_small_alphabet_expansions_preserve_languages_exhaustively(self) -> None:
+        expressions = (
+            alternate(literal(b"ax"), literal(b"bx"), literal(b"cy")),
+            concat(alternate(EPSILON, literal(b"a")), literal(b"b")),
+            repeat(alternate(EPSILON, literal(b"a"), literal(b"ab")), 2, 4),
+            repeat(alternate(literal(b"a"), literal(b"ba")), 0, None),
+        )
+        inputs = tuple(
+            bytes(values)
+            for length in range(6)
+            for values in itertools.product(b"abxy", repeat=length)
+        )
+        for expression in expressions:
+            candidate = expand_derivatives(expression)
+            before = _compile(expression)
+            after = _compile(candidate)
+            for value in inputs:
+                self.assertEqual(
+                    before.fullmatch(value) is not None,
+                    after.fullmatch(value) is not None,
+                    (expression, candidate, value),
+                )
+
+    def test_random_expansions_preserve_languages(self) -> None:
+        randomizer = random.Random(20_260_821)
+        inputs = tuple(
+            bytes(values)
+            for length in range(5)
+            for values in itertools.product(b"ab", repeat=length)
+        )
+        for _ in range(100):
+            expression = _random_expression(randomizer, 3)
+            candidate = expand_derivatives(expression)
+            before = _compile(expression)
+            after = _compile(candidate)
+            for value in inputs:
+                self.assertEqual(
+                    before.fullmatch(value) is not None,
+                    after.fullmatch(value) is not None,
+                    (expression, candidate, value),
+                )
+
 
 class DerivativeLanguageEquivalenceTests(unittest.TestCase):
     def test_random_derivatives_are_left_quotients(self) -> None:
         randomizer = random.Random(20_260_821)
-        leaves = (
-            EPSILON,
-            NEVER,
-            literal(b"a"),
-            literal(b"b"),
-            literal(b"ab"),
-            charset(b"ab"),
-        )
-
-        def generate(depth: int) -> Op:
-            if depth == 0 or randomizer.randrange(4) == 0:
-                return randomizer.choice(leaves)
-            operation = randomizer.randrange(3)
-            if operation == 0:
-                return concat(*(generate(depth - 1) for _ in range(2)))
-            if operation == 1:
-                return alternate(*(generate(depth - 1) for _ in range(3)))
-            minimum, maximum = randomizer.choice(
-                ((0, 1), (0, 2), (0, None), (1, 3), (2, 4))
-            )
-            return repeat(generate(depth - 1), minimum, maximum)
-
         suffixes = tuple(
             bytes(values)
             for length in range(4)
             for values in itertools.product(b"ab", repeat=length)
         )
         for _ in range(100):
-            expression = generate(3)
+            expression = _random_expression(randomizer, 3)
             before = _compile(expression)
             engine = DerivativeEngine()
             for symbol in b"abc":

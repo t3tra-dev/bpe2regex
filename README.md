@@ -88,9 +88,11 @@ Repeat(body, min, max | None)
 
 `CandidateGenerator` は同値な変換候補だけを生成し, `CostModel` は候補評価を rewrite から分離します. `MinimumCostSelector` は cost model の辞書式 key が最小の候補を選び, 完全な tie では入力順で最初の候補を保持します. `CandidateSelectionPass` がこの三者を接続するため, search transformation を通常の `RegexCompiler` pipeline に追加できます.
 
-`StructuralCostModel` は operation 数と literal byte 数, `SourceSizeCostModel` は target source の UTF-8 byte 数, `DeflatedSourceCostModel` は単独 source の raw-DEFLATE byte 数を評価します. artifact 全体の serialized cost を評価する場合は `FunctionalCostModel` に engine 固有の serializer callback と比較 key を渡します. `benchmark_compiler` は pass と lowering を含む時間, 最終 IR の構造, source 長, raw-DEFLATE 長を一つの結果として記録します.
+`StructuralCostModel` は operation 数と literal byte 数, `SourceSizeCostModel` は target source の UTF-8 byte 数, `DeflatedSourceCostModel` は単独 source の raw-DEFLATE byte 数を評価します. `ArtifactSizeCostModel` は lowered output を完全な artifact bytes にする engine 固有 serializer を受け取り, container や side table も含む総 byte 数を評価します. より一般の目的関数には `FunctionalCostModel` を使用できます. `benchmark_compiler` は pass と lowering を含む時間, 最終 IR の構造, source 長, raw-DEFLATE 長を一つの結果として記録します.
 
-`DerivativeEngine` は7つのpure opに対するBrzozowski derivativeを`(op identity, byte)`単位でmemoizeします. `group()`は`First(R)`に含まれるbyteだけを評価し, canonicalization後のresidual IRがstructurally equalなbyteを一つの`CharSet`へまとめます. DFA equivalenceによるsemantic groupingはまだ行いません. この段階ではderivative展開をrewrite候補にはせず, language semanticsとresidual partitionだけを提供します.
+`DerivativeEngine` は7つのpure opに対するBrzozowski derivativeを`(op identity, byte)`単位でmemoizeします. `group()`は`First(R)`に含まれるbyteだけを評価し, canonicalization後のresidual IRがstructurally equalなbyteを一つの`CharSet`へまとめます. DFA equivalenceによるsemantic groupingはまだ行いません.
+
+`DerivativeFactoringGenerator` はnullabilityとgrouped derivativeから元のlanguageを再構築し, `CandidateSelectionPass`へ同値候補として渡します. original IRはselection passが候補0として保持するため, factoringは強制rewriteになりません. `SourceSizeCostModel`, `DeflatedSourceCostModel`, または完全なartifact bytesを受け取る`ArtifactSizeCostModel`で候補が勝った場合だけ採用されます.
 
 ### Canonical tokenizer の matching 契約
 

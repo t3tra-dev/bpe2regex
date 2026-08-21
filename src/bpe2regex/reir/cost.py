@@ -28,6 +28,7 @@ class LoweredSizeCost:
 type CostCallback[CostT] = Callable[[Op, AnalysisManager], CostT]
 type CostKeyValue = tuple[int, ...]
 type CostKey[CostT] = Callable[[CostT], CostKeyValue]
+type ArtifactSerializer[ResultT] = Callable[[ResultT], bytes]
 
 
 class CostModel[CostT](ABC):
@@ -151,7 +152,20 @@ class DeflatedSourceCostModel(LoweredSizeCostModel[str]):
         )
 
 
+class ArtifactSizeCostModel[ResultT](LoweredSizeCostModel[ResultT]):
+    """Minimize a complete serialized artifact produced from lowered output."""
+
+    def __init__(
+        self,
+        lowerer: Lowerer[ResultT],
+        serialize: ArtifactSerializer[ResultT],
+    ) -> None:
+        super().__init__(lowerer, lambda output: len(serialize(output)))
+
+
 __all__ = [
+    "ArtifactSerializer",
+    "ArtifactSizeCostModel",
     "CostCallback",
     "CostKey",
     "CostKeyValue",

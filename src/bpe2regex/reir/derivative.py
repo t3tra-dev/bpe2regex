@@ -145,6 +145,18 @@ class DerivativeEngine:
             for residual, bits in residual_bits.items()
         )
 
+    def expand(self, root: Op) -> Op:
+        """Reconstruct ``root`` from nullability and grouped derivatives."""
+        if not isinstance(root, PureOp):
+            raise TypeError("derivative expansion requires pure regex semantics")
+        properties = self.analyses.get(RegexPropertiesAnalysis, root)
+        branches: list[Op] = [EPSILON] if properties.nullable else []
+        branches.extend(
+            self.builder.concat(group.symbols, group.residual)
+            for group in self.group(root)
+        )
+        return self.builder.alternate(*branches)
+
 
 def derivative(
     root: Op,
@@ -165,9 +177,19 @@ def group_derivatives(
     return DerivativeEngine(builder=builder, analyses=analyses).group(root)
 
 
+def expand_derivatives(
+    root: Op,
+    *,
+    builder: RegexBuilder = DEFAULT_BUILDER,
+    analyses: AnalysisManager | None = None,
+) -> Op:
+    return DerivativeEngine(builder=builder, analyses=analyses).expand(root)
+
+
 __all__ = [
     "DerivativeEngine",
     "DerivativeGroup",
     "derivative",
+    "expand_derivatives",
     "group_derivatives",
 ]
