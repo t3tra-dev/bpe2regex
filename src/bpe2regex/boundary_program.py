@@ -2,10 +2,17 @@
 
 import re
 from collections.abc import Mapping
-from typing import Any, Self
+from typing import Any, Protocol, Self
 
 from .match import TokenMatch
-from .reir.automata.canonical_boundary import CanonicalBoundaryRegexSource
+
+
+class BoundaryRegexSource(Protocol):
+    boundary_pattern: str
+    boundary_capture_count: int
+    token_to_rank: str
+    token_capture_ranks: tuple[int, ...]
+    token_count: int
 
 
 class BoundaryRegexBPE:
@@ -13,7 +20,7 @@ class BoundaryRegexBPE:
 
     def __init__(
         self,
-        source: CanonicalBoundaryRegexSource,
+        source: BoundaryRegexSource,
         *,
         metadata: Mapping[str, Any] | None = None,
     ) -> None:
@@ -98,4 +105,4 @@ class BoundaryRegexBPE:
         self.close()
 
 
-__all__ = ["BoundaryRegexBPE"]
+__all__ = ["BoundaryRegexBPE", "BoundaryRegexSource"]

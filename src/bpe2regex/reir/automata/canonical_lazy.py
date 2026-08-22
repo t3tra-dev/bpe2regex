@@ -29,23 +29,23 @@ class TokenCloneIndex:
 
     def __init__(self, adjacency: CanonicalAdjacencyIR) -> None:
         self.adjacency = adjacency
-        children: list[list[int]] = [[] for _ in range(adjacency.alphabet_size)]
+        children: dict[int, list[int]] = {}
         for token in adjacency.active_tokens:
             parent = adjacency.token_parents[token]
             if parent is not None:
-                children[parent].append(token)
-        for row in children:
+                children.setdefault(parent, []).append(token)
+        for row in children.values():
             row.sort(key=lambda token: adjacency.token_births[token])
-        self.children = tuple(tuple(row) for row in children)
-        self.child_births = tuple(
-            tuple(adjacency.token_births[token] for token in row)
-            for row in self.children
-        )
-        positions = [-1] * adjacency.alphabet_size
-        for row in self.children:
-            for position, token in enumerate(row):
-                positions[token] = position
-        self.child_positions = tuple(positions)
+        self.children = {parent: tuple(row) for parent, row in children.items()}
+        self.child_births = {
+            parent: tuple(adjacency.token_births[token] for token in row)
+            for parent, row in self.children.items()
+        }
+        self.child_positions = {
+            token: position
+            for row in self.children.values()
+            for position, token in enumerate(row)
+        }
 
     def cone(self, root: int, threshold: int) -> TokenCone:
         if not 0 <= root < self.adjacency.alphabet_size:
@@ -54,7 +54,7 @@ class TokenCloneIndex:
             raise ValueError("a token cone root must be active")
         return TokenCone(
             root,
-            bisect.bisect_right(self.child_births[root], threshold),
+            bisect.bisect_right(self.child_births.get(root, ()), threshold),
         )
 
     def _first_child_below(self, ancestor: int, descendant: int) -> int | None:
@@ -115,7 +115,8 @@ class CanonicalLazyQuotientMetrics:
     active_token_count: int
     signature_cone_count: int
     maximum_signature_cones: int
-    avoided_dense_cell_count: int
+    input_dense_cell_count: int
+    quotient_dense_cell_count: int
     elapsed_seconds: float
 
 
@@ -277,6 +278,7 @@ class CanonicalLazyQuotientCompiler:
             cone_count,
             max((len(signature.cones) for signature in signatures), default=0),
             adjacency.state_count * len(adjacency.active_tokens),
+            len(block_members) * len(adjacency.active_tokens),
             time.perf_counter() - started,
         )
         return CanonicalLazyQuotient(
