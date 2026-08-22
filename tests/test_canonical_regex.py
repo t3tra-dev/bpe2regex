@@ -8,6 +8,7 @@ from bpe2regex.reir import (
     Op,
     SymbolSet,
     TokenSymbolLowerer,
+    raw_deflate_size,
 )
 from bpe2regex.reir.source import render_regex
 from bpe2regex.vocabulary import recover_merge_parents, reference_bpe_ids
@@ -90,6 +91,41 @@ class CanonicalTokenRegexCompilerTests(unittest.TestCase):
             set(self.compilation.capture_ranks),
             set(range(len(TOKENS))),
         )
+
+    def test_cost_search_never_loses_the_fixed_scc_order(self) -> None:
+        searched = CanonicalTokenRegexCompiler(
+            TOKENS,
+            PARENTS,
+            base_token_count=3,
+        ).compile_python(elimination_beam_width=3)
+        self.assertLessEqual(
+            raw_deflate_size(searched.pattern),
+            raw_deflate_size(self.compilation.pattern),
+        )
+        self.assertGreater(
+            searched.ir.metrics.explored_elimination_candidates,
+            0,
+        )
+        with CanonicalRegexBPE(searched) as program:
+            for length in range(5):
+                for values in itertools.product(b"abc", repeat=length):
+                    word = bytes(values)
+                    match = program.fullmatch(word)
+                    self.assertIsNotNone(match)
+                    assert match is not None
+                    self.assertEqual(
+                        match.token_ids,
+                        reference_bpe_ids(word, TOKENS, RANK_OF),
+                    )
+
+    def test_cost_search_rejects_an_empty_beam(self) -> None:
+        compiler = CanonicalTokenRegexCompiler(
+            TOKENS,
+            PARENTS,
+            base_token_count=3,
+        )
+        with self.assertRaisesRegex(ValueError, "positive"):
+            compiler.compile_ir(elimination_beam_width=0)
 
 
 class CanonicalRegexValidationTests(unittest.TestCase):

@@ -1,10 +1,11 @@
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..builder import DEFAULT_BUILDER, RegexBuilder
-from ..ops import EPSILON, NEVER, Op, PureOp
+from ..cost import raw_deflate_size
+from ..ops import EPSILON, NEVER, Literal, Op, PureOp
 from ..tagged import TAGGED_BUILDER
 from ..tagged_source import render_tagged_regex
 from .algorithms import coreachable_states, minimize_dfa, prune_dead_states
@@ -13,7 +14,11 @@ from .canonical import (
     CanonicalTokenDFAMetrics,
     CanonicalTokenDFAProgress,
 )
-from .elimination import ArdenEliminator, SCCEliminationOrder
+from .elimination import (
+    ArdenEliminator,
+    SCCEliminationOrder,
+    strongly_connected_components,
+)
 from .ir import DFA
 from .labels import SymbolSet
 
@@ -91,6 +96,15 @@ class _TaggedGeneralizedAutomaton:
         self.final = final
         self.edges: dict[tuple[int, int], Op] = {}
 
+    def copy(self) -> _TaggedGeneralizedAutomaton:
+        result = _TaggedGeneralizedAutomaton(
+            tuple(self.states),
+            self.source,
+            self.final,
+        )
+        result.edges = self.edges.copy()
+        return result
+
     def add_edge(self, source: int, target: int, label: Op) -> None:
         if source not in self.states or target not in self.states:
             raise ValueError("a tagged GNFA edge endpoint is inactive")
@@ -139,6 +153,69 @@ class _TaggedGeneralizedAutomaton:
             raise ValueError("all tagged GNFA states must be eliminated first")
         return self.edges.get((self.source, self.final), NEVER)
 
+    @property
+    def aggregate_expression(self) -> Op:
+        return TAGGED_BUILDER.alternate(
+            *(self.edges[endpoints] for endpoints in sorted(self.edges))
+        )
+
+
+type TaggedExpressionCost = Callable[[Op], tuple[int, ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalEliminationSearchResult:
+    expression: Op
+    order: tuple[int, ...]
+    cost: tuple[int, ...]
+    explored_candidates: int
+
+
+@dataclass(slots=True)
+class _PartialTaggedElimination:
+    graph: _TaggedGeneralizedAutomaton
+    order: tuple[int, ...]
+
+
+def _occurrence_cost(root: Op) -> tuple[int, ...]:
+    cache: dict[int, tuple[Op, tuple[int, int]]] = {}
+
+    def visit(op: Op) -> tuple[int, int]:
+        known = cache.get(id(op))
+        if known is not None and known[0] is op:
+            return known[1]
+        child_costs = tuple(visit(child) for child in op.operands)
+        cost = (
+            1 + sum(item[0] for item in child_costs),
+            (len(op.value) if isinstance(op, Literal) else 0)
+            + sum(item[1] for item in child_costs),
+        )
+        cache[id(op)] = (op, cost)
+        return cost
+
+    return visit(root)
+
+
+def _python_deflate_cost(root: Op) -> tuple[int, ...]:
+    source = render_tagged_regex(
+        root,
+        escape_byte=lambda byte: f"\\x{byte:02x}",
+        emit_tag=lambda _rank: "()",
+    )
+    return raw_deflate_size(source), len(source.encode("utf-8"))
+
+
+def _tagged_graph_signature(
+    graph: _TaggedGeneralizedAutomaton,
+) -> tuple[tuple[int, ...], tuple[tuple[int, int, Op], ...]]:
+    return (
+        tuple(sorted(graph.states)),
+        tuple(
+            (source, target, graph.edges[source, target])
+            for source, target in sorted(graph.edges)
+        ),
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class CanonicalTokenRegexMetrics:
@@ -147,6 +224,8 @@ class CanonicalTokenRegexMetrics:
     minimized_transition_group_count: int
     minimization_seconds: float
     elimination_seconds: float
+    elimination_order: tuple[int, ...]
+    explored_elimination_candidates: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,16 +242,15 @@ class CanonicalTokenRegexSource:
     ir: CanonicalTokenRegexIRResult
 
 
-def lower_canonical_token_dfa(
+def _prepare_canonical_token_graph(
     automaton: DFA[bool],
     tokens: Sequence[bytes | None],
-) -> Op:
-    """Lower a canonical-token DFA to a first-boundary tagged byte regex."""
+) -> tuple[_TaggedGeneralizedAutomaton, frozenset[int]] | None:
     if automaton.alphabet_size != len(tokens):
         raise ValueError("canonical DFA and vocabulary have different alphabets")
     useful = coreachable_states(automaton)
     if automaton.start not in useful:
-        return NEVER
+        return None
 
     source = automaton.state_count
     final = source + 1
@@ -212,11 +290,119 @@ def lower_canonical_token_dfa(
                 )
         if automaton.outputs[state] is not None:
             graph.add_edge(state, final, EPSILON)
+    return graph, useful
+
+
+def lower_canonical_token_dfa(
+    automaton: DFA[bool],
+    tokens: Sequence[bytes | None],
+) -> Op:
+    """Lower a canonical-token DFA to a first-boundary tagged byte regex."""
+    prepared = _prepare_canonical_token_graph(automaton, tokens)
+    if prepared is None:
+        return NEVER
+    graph, useful = prepared
 
     order = SCCEliminationOrder().order(automaton, useful)
     for state in order:
         graph.eliminate(state)
     return graph.expression
+
+
+class CanonicalEliminationOrderSearcher:
+    """Beam-search SCC-local orders for the tagged canonical-token GNFA."""
+
+    def __init__(
+        self,
+        *,
+        beam_width: int = 8,
+        proxy_cost: TaggedExpressionCost = _occurrence_cost,
+        final_cost: TaggedExpressionCost = _python_deflate_cost,
+    ) -> None:
+        if beam_width <= 0:
+            raise ValueError("an elimination beam width must be positive")
+        self.beam_width = beam_width
+        self.proxy_cost = proxy_cost
+        self.final_cost = final_cost
+
+    def _prune(
+        self,
+        candidates: list[_PartialTaggedElimination],
+    ) -> list[_PartialTaggedElimination]:
+        unique: dict[
+            tuple[tuple[int, ...], tuple[tuple[int, int, Op], ...]],
+            _PartialTaggedElimination,
+        ] = {}
+        for candidate in candidates:
+            signature = _tagged_graph_signature(candidate.graph)
+            previous = unique.get(signature)
+            if previous is None or candidate.order < previous.order:
+                unique[signature] = candidate
+        return sorted(
+            unique.values(),
+            key=lambda candidate: (
+                self.proxy_cost(candidate.graph.aggregate_expression),
+                candidate.order,
+            ),
+        )[: self.beam_width]
+
+    def search(
+        self,
+        automaton: DFA[bool],
+        tokens: Sequence[bytes | None],
+    ) -> CanonicalEliminationSearchResult:
+        prepared = _prepare_canonical_token_graph(automaton, tokens)
+        if prepared is None:
+            return CanonicalEliminationSearchResult(
+                NEVER,
+                (),
+                self.final_cost(NEVER),
+                0,
+            )
+        initial, useful = prepared
+        baseline_order = SCCEliminationOrder().order(automaton, useful)
+        baseline = initial.copy()
+        for state in baseline_order:
+            baseline.eliminate(state)
+
+        beam = [_PartialTaggedElimination(initial.copy(), ())]
+        explored = 0
+        for component in strongly_connected_components(automaton, useful):
+            for _ in range(len(component)):
+                expanded: list[_PartialTaggedElimination] = []
+                for candidate in beam:
+                    for state in sorted(component.difference(candidate.order)):
+                        graph = candidate.graph.copy()
+                        graph.eliminate(state)
+                        expanded.append(
+                            _PartialTaggedElimination(
+                                graph,
+                                (*candidate.order, state),
+                            )
+                        )
+                explored += len(expanded)
+                beam = self._prune(expanded)
+
+        completed = [(baseline_order, baseline.expression)]
+        completed.extend(
+            (candidate.order, candidate.graph.expression)
+            for candidate in beam
+            if candidate.order != baseline_order
+        )
+        evaluated = tuple(
+            (index, order, expression, self.final_cost(expression))
+            for index, (order, expression) in enumerate(completed)
+        )
+        _, order, expression, cost = min(
+            evaluated,
+            key=lambda item: (item[3], item[0]),
+        )
+        return CanonicalEliminationSearchResult(
+            expression,
+            order,
+            cost,
+            explored,
+        )
 
 
 def lower_canonical_token_dfa_by_residuals(
@@ -287,6 +473,7 @@ class CanonicalTokenRegexCompiler:
         max_transition_groups: int | None = None,
         checkpoint_interval: int = 1_000,
         progress: CanonicalTokenDFAProgress | None = None,
+        elimination_beam_width: int | None = None,
     ) -> CanonicalTokenRegexIRResult:
         dfa_result = self.dfa_compiler.compile(
             merge_limit=merge_limit,
@@ -303,7 +490,18 @@ class CanonicalTokenRegexCompiler:
         )
         minimization_seconds = time.perf_counter() - minimization_started
         elimination_started = time.perf_counter()
-        expression = lower_canonical_token_dfa(automaton, self.tokens)
+        if elimination_beam_width is None:
+            expression = lower_canonical_token_dfa(automaton, self.tokens)
+            useful = coreachable_states(automaton)
+            elimination_order = SCCEliminationOrder().order(automaton, useful)
+            explored_candidates = 0
+        else:
+            search = CanonicalEliminationOrderSearcher(
+                beam_width=elimination_beam_width
+            ).search(automaton, self.tokens)
+            expression = search.expression
+            elimination_order = search.order
+            explored_candidates = search.explored_candidates
         elimination_seconds = time.perf_counter() - elimination_started
         return CanonicalTokenRegexIRResult(
             expression,
@@ -314,6 +512,8 @@ class CanonicalTokenRegexCompiler:
                 automaton.transition_group_count,
                 minimization_seconds,
                 elimination_seconds,
+                elimination_order,
+                explored_candidates,
             ),
         )
 
@@ -334,10 +534,13 @@ def _emit_capture(capture_ranks: list[int], rank: int) -> str:
 
 
 __all__ = [
+    "CanonicalEliminationOrderSearcher",
+    "CanonicalEliminationSearchResult",
     "CanonicalTokenRegexCompiler",
     "CanonicalTokenRegexIRResult",
     "CanonicalTokenRegexMetrics",
     "CanonicalTokenRegexSource",
+    "TaggedExpressionCost",
     "TokenSymbolLowerer",
     "lower_canonical_token_dfa",
     "lower_canonical_token_dfa_by_residuals",
