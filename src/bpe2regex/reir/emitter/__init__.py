@@ -6,6 +6,7 @@ from typing import Any, Literal, overload
 
 from .ecmascript import RegexSources as ECMAScriptRegexSources
 from .ecmascript import emit_sources as emit_ecmascript_sources
+from .pcre2 import PCRE2DAGSource, PCRE2SubroutineDAGEmitter, render_pcre2_dag
 from .python import RegexSources as PythonRegexSources
 from .python import emit_sources as emit_python_sources
 
@@ -64,4 +65,11 @@ def emit_regex_sources(
     raise ValueError(f"unsupported regex compatibility: {compatibility!r}")
 
 
-__all__ = ["Compatibility", "RegexSources", "emit_regex_sources"]
+__all__ = [
+    "Compatibility",
+    "PCRE2DAGSource",
+    "PCRE2SubroutineDAGEmitter",
+    "RegexSources",
+    "emit_regex_sources",
+    "render_pcre2_dag",
+]

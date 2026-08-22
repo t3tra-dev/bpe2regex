@@ -32,10 +32,16 @@ class BoundaryRegexBPE:
             raise ValueError("canonical regex captures must be anonymous")
         if self.boundary_pattern.groups != source.boundary_capture_count:
             raise ValueError("boundary capture count differs from its pattern")
+        if source.boundary_capture_count <= 0:
+            raise ValueError("canonical boundary regex must contain a capture")
         if self.token_pattern.groups != len(source.token_capture_ranks):
             raise ValueError("token capture table width differs from its pattern")
         if len(set(source.token_capture_ranks)) != len(source.token_capture_ranks):
             raise ValueError("token capture table contains duplicate ranks")
+        if any(
+            not 0 <= rank < source.token_count for rank in source.token_capture_ranks
+        ):
+            raise ValueError("token capture rank is outside the vocabulary")
         self._token_ranks = (-1, *source.token_capture_ranks)
         self._closed = False
 

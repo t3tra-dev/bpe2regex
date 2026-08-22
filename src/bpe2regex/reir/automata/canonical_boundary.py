@@ -447,9 +447,13 @@ def _token_lookup_source(
     tokens: Sequence[bytes | None],
     ranks: Sequence[int],
 ) -> tuple[str, tuple[int, ...]]:
-    fst = TaggedFST.from_pairs(
-        (tokens[rank], rank) for rank in ranks if tokens[rank] is not None
-    )
+    pairs: list[tuple[bytes, int]] = []
+    for rank in ranks:
+        token = tokens[rank]
+        if token is None:
+            raise ValueError(f"reserved token rank {rank} cannot enter lookup")
+        pairs.append((token, rank))
+    fst = TaggedFST.from_pairs(pairs)
     captures: list[int] = []
     source = render_tagged_regex(
         fst.to_regex(),

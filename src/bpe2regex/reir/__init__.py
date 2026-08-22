@@ -143,6 +143,11 @@ from .derivative import (
     group_derivatives,
 )
 from .derivative_search import DerivativeFactoringGenerator
+from .emitter.pcre2 import (
+    PCRE2DAGSource,
+    PCRE2SubroutineDAGEmitter,
+    render_pcre2_dag,
+)
 from .lowering import (
     FunctionalOpLowerer,
     Lowerer,
@@ -334,6 +339,8 @@ __all__ = [
     "OperationPass",
     "OutputLanguage",
     "OutputSize",
+    "PCRE2DAGSource",
+    "PCRE2SubroutineDAGEmitter",
     "PassManager",
     "PassResult",
     "PatternApplicator",
@@ -401,6 +408,7 @@ __all__ = [
     "raw_deflate_size",
     "reachable_states",
     "render_marked_regex",
+    "render_pcre2_dag",
     "render_regex",
     "repeat",
     "strongly_connected_components",

@@ -84,6 +84,8 @@ Repeat(body, min, max | None)
 
 `Tag(rank)` は pure REIR に含めず `bpe2regex.reir.tagged` の出力付き dialect に分離しています. `TaggedConcat` / `TaggedAlternate` が出力順を持つ graph を構成し, core `Concat` / `Alternate` は constructor で `PureOp` 以外の child を拒否します. tagged builder は branch order と duplicate を保持し, pure subtree だけを core builder へ委譲します. `TaggedFST` はこの dialect へ lowering され, `TaggedRegexSourceLowerer` が `Tag` を匿名 capture と capture-rank side table に変換します.
 
+`bpe2regex.reir.marked` の `Boundary` は別の出力付き tag ではなく, byte alphabet に一記号を加えた marked regular language 上の純粋な symbol です. したがって union の可換化・dedup・prefix/suffix factoring・Arden elimination を通常の言語等式のまま適用し, 最終 source lowering の homomorphism だけが `Boundary` を空 capture へ消去します. `MarkerCountAnalysis` は全受理 path の marker 数の下限・上限を伝播し, lowering 前に必ず `min=max=1` を検証します.
+
 `RewritePattern` / `PatternRewriter`, `OperationPass` / `PassManager`, `Lowerer` / `OpLowerer` はすべて追加実装・登録可能です. engine 別 emitter も `bpe2regex.reir.emitter` 配下に置き, FST から source regex までを REIR コンパイラの責務としてまとめています.
 
 `CandidateGenerator` は同値な変換候補だけを生成し, `CostModel` は候補評価を rewrite から分離します. `MinimumCostSelector` は cost model の辞書式 key が最小の候補を選び, 完全な tie では入力順で最初の候補を保持します. `CandidateSelectionPass` がこの三者を接続するため, search transformation を通常の `RegexCompiler` pipeline に追加できます.
@@ -112,7 +114,11 @@ accept state は bool だけでなく hashable な observable output を持て�
 
 `CanonicalTokenDFACompiler` は byte-token の universal DFA に rank 順で merge rule を適用し, canonical token 列だけを受理する token-alphabet DFA を構築します. incremental construction は [Constructing a BPE Tokenization DFA](https://arxiv.org/abs/2405.07671) の Algorithm 2 を byte vocabulary 全体へ適用したものです. 構築途中の state / transition-group budget と checkpoint callback を持つため, 表現爆発を bounded に観測できます. その後 `minimize_dfa()` と `prune_dead_states()` で residual quotient と totalization 時の reject sink を除きます.
 
+`CanonicalAdjacencyCompiler` は同じ universal DFA の 1-local 性を利用し, transition matrix を materialize しません. merge ごとに token column を左親から clone し, middle state の row を clone して最大2 cellの deny override を記録します. cell query は state/token の birth order が新しい側の parent を辿るため, 後から作られた token descendant と row snapshot の意味を正確に保ちます. `to_dfa()` は小 prefix の equivalence 検証用にだけ明示的な cell budget 付きで用意しています.
+
 `TokenSymbolLowerer` は token-rank の `SymbolSet` を token bytes の prefix-factored pure REIR へ変換します. `ArdenEliminator` は byte alphabet 固定ではなく任意の label lowerer と開始 state を受け取れるため, token DFA の residual language も同じ基盤で処理できます. `CanonicalTokenRegexCompiler` は開始 edge だけを `Literal(token) · Tag(rank)` とし, 残りを pure token language として SCC-aware elimination した tagged REIR / Python regex source を生成します.
+
+`CanonicalBoundaryRegexCompiler` は開始 edge を `token-language · Boundary` とし, rank ごとの `Tag` を共通 marker へ置き換えます. `BoundaryRegexBPE` は suffix 全体の boundary regex を繰り返し `fullmatch` し, 唯一参加した capture 位置までの bytes を二本目の静的 token-to-rank regex へ `fullmatch` して rank を得ます. `BoundaryCostObjective` は boundary pattern と token lookup の両 source, 連結 raw-DEFLATE, または capture-rank table と container を含む artifact 全体を選択目的にできます.
 
 `bpe2regex.reir.boolean` は core 7 op の通常形とは分離した transient dialect として `Universal(Σ*)`, `Intersect`, `Complement`, `Difference` を提供します. union の可換 canonicalization と同様に intersection を flat / sorted / unique にし, double complement, identity, annihilator, `A ∩ ¬A`, trivial difference を constructor で fold します. `Complement(CharSet)` は文字 class の補集合ではなく `Σ* \\ L(CharSet)` であり, 空文字と複数 byte 列も含むため `CharSet.complement()` へは fold しません.
 
@@ -166,6 +172,33 @@ regex size は stepwise かつ強く superlinear なので full-size の信頼�
 
 ```bash
 uv run python tools/measure_canonical_r50k.py
+```
+
+### Marked boundary, persistent adjacency, PCRE2 DAG
+
+2026-08-23 の実測では, `CanonicalAdjacencyCompiler` は full r50k の50,000 mergesを0.164秒で構築しました. 50,001 states × 50,256 active tokens = 2,512,850,256 logical cellsに対し, state/token parent linkとdeny overrideを合わせたpersistent recordは250,501個です. dense cell比10,031倍, u32配列へ詰めた場合の理論payloadは1,204,056 bytesです. これはPython objectの実メモリ量ではなく, fieldを固定幅整数へserializeした下限寄りの値です.
+
+state cloneの最大深さは330, token cloneは7で, 100,000 cell sampleのtransition densityは約96.6%でした. prefix 10 / 100 / 500については現行のdense `CanonicalTokenDFACompiler` とそれぞれ2,926 / 35,956 / 378,756 active cellを全比較し一致しています. これでfull adjacencyの構築時爆発は止まりましたが, 現行のminimizationとGNFA eliminationはまだ`DFA`の明示rowを要求するため, full monster regexの生成まで解決したわけではありません.
+
+```bash
+uv run python tools/measure_persistent_r50k.py
+```
+
+同じ日に, 共通`Boundary`をinline captureへlowerしたPython sourceと, pure byte subgraphだけをPCRE2 `(?(DEFINE)...)` / `(?&name)`へ保持したDAG sourceをbeam width 3で比較しました. `combined artifact`はboundary pattern, token-to-rank pattern, capture-rank table, experimental containerをまとめてraw-DEFLATEした値です.
+
+| merges | expanded boundary source / DEFLATE | token lookup source | combined artifact | PCRE2 DAG source / DEFLATE | source比 | shared defs |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 25 / 18 | 1,795 | 908 | 25 / 18 | 1.00× | 0 |
+| 1 | 201 / 73 | 1,806 | 1,007 | 189 / 96 | 1.06× | 1 |
+| 3 | 739 / 145 | 1,824 | 1,113 | 518 / 176 | 1.43× | 3 |
+| 5 | 2,413 / 217 | 1,846 | 1,220 | 1,152 / 298 | 2.09× | 12 |
+| 10 | 61,172 / 884 | 1,901 | 2,014 | 6,002 / 832 | 10.19× | 43 |
+| 15 | 129,451 / 1,565 | 1,936 | 2,797 | 10,071 / 1,158 | 12.85× | 56 |
+
+PCRE2 10.47で全patternのcompileを確認しています. `DEFINE`内のcaptureはsubroutine call終了後にboundary offsetを保持しないため, `Boundary`を含むsubgraphは共有候補から明示的に除外し, main patternの匿名captureとしてinlineします. 定義groupは先頭, boundary captureはその後に並ぶのでPCRE2 runtimeは両者を区別できます. 標準Python `re` / ECMAScriptにはsubroutine callがないため, このemitterはopt-inの実験targetです.
+
+```bash
+uv run python tools/measure_pcre2_dag_r50k.py
 ```
 
 ### Boolean dense label の実測
