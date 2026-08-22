@@ -100,7 +100,17 @@ pure REIR のproduction source loweringは`StructureDiscoveryPass`の後にこ�
 
 accept state は bool だけでなく hashable な observable output を持てます. したがって residual quotient は accept/reject が一致するだけの state を併合せず, rank 等の output まで一致する state だけを併合します. `minimize_dfa()` は到達不能 state の除去, 暗黙 reject sink による totalization, global symbol equivalence class の構築, output-aware Hopcroft refinement, BFS 順の canonical reindex を行い, 元 state から quotient state への map も返します. `equivalence_counterexample()` は二つの partial DFA に対し, output が異なる最短かつ辞書順最小の入力列を返します.
 
-この段階では REIR への state elimination はまだ行いません. SCC-aware Arden elimination, default transition の構文上の表現, elimination 順序の cost 探索, automaton 段階の semantic absorption は, この基盤の上へ独立した analysis / transform / lowering として追加します.
+`DefaultTransition` は明示 edge が覆わない残余 alphabet を一つの target へ送る構文です. `encode_default_transitions()` は total row で最大の symbol set を default 化し, `expand_default_transitions()` / `effective_transitions()` はそれを厳密な補集合 label へ戻します. partial row は未定義入力が reject であるため自動 totalize しません.
+
+`ArdenEliminator` は対象 output へ到達できない state を除き, condensation DAG の下流 SCC から GNFA state を消去して pure REIR を生成します. 各更新は loop を `Repeat(loop, 0, None)` とした Arden の `prefix · loop* · suffix` です. 全 accepting state の union に加え, observable output ごとの言語も個別に lower できます.
+
+`CostGuidedArdenEliminator` は SCC 間の順序を固定したまま SCC 内の state-elimination 順序を beam search します. partial graph は任意の `CostModel` で評価し, 最終候補は完成した REIR の source / DEFLATE / artifact cost で比較できます. beam が狭くても決定的な SCC baseline は必ず最終候補に残します.
+
+`AutomatonSemanticAbsorber` は pure acceptance DFA の union に対し積 automaton で言語包含を証明し, `L(A) ⊆ L(B)` の alternative `A` を除去します. 同値な alternative は入力順の先頭だけを残します. rank/tag output を持つ DFA にはこの absorption を適用しません.
+
+`AcceptanceAutomataCompiler` は pure DFA 群に residual minimization, semantic absorption, default-transition encoding, Arden elimination を順に適用し, union 全体を一つの REIR へ lower します. eliminator は `CostGuidedArdenEliminator` へ差し替え可能です.
+
+ここまでが「与えられた control automaton を小さな REIR へ戻す」基盤です. merge rules から canonical-token adjacency automaton 自体を構築する工程はまだ接続していません.
 
 ### Canonical tokenizer の matching 契約
 

@@ -1,8 +1,9 @@
 from collections import deque
 from collections.abc import Hashable, Iterable
 from dataclasses import dataclass
+from itertools import chain
 
-from .ir import DFA, Transition
+from .ir import DFA, DefaultTransition, Transition
 from .labels import SymbolSet
 
 type ProductState = tuple[int | None, int | None]
@@ -49,7 +50,11 @@ def alphabet_partition[OutputT: Hashable](
     """Group symbols whose transition behavior is indistinguishable everywhere."""
     return _symbol_partition(
         automaton.alphabet_size,
-        (transition.symbols for row in automaton.transitions for transition in row),
+        (
+            transition.symbols
+            for state in range(automaton.state_count)
+            for transition in automaton.effective_transitions(state)
+        ),
     )
 
 
@@ -61,7 +66,7 @@ def reachable_states[OutputT: Hashable](automaton: DFA[OutputT]) -> tuple[int, .
     while pending:
         state = pending.popleft()
         order.append(state)
-        for transition in automaton.transitions[state]:
+        for transition in automaton.effective_transitions(state):
             if transition.target not in seen:
                 seen.add(transition.target)
                 pending.append(transition.target)
@@ -71,8 +76,8 @@ def reachable_states[OutputT: Hashable](automaton: DFA[OutputT]) -> tuple[int, .
 def coreachable_states[OutputT: Hashable](automaton: DFA[OutputT]) -> frozenset[int]:
     """Return states from which some observable accepting output is reachable."""
     predecessors: list[set[int]] = [set() for _ in range(automaton.state_count)]
-    for source, row in enumerate(automaton.transitions):
-        for transition in row:
+    for source in range(automaton.state_count):
+        for transition in automaton.effective_transitions(source):
             predecessors[transition.target].add(source)
     coreachable = set(automaton.accepting_states)
     pending = deque(sorted(coreachable))
@@ -93,6 +98,7 @@ def prune_unreachable[OutputT: Hashable](
     for target, source in enumerate(order):
         state_map[source] = target
     rows: list[tuple[Transition, ...]] = []
+    defaults: list[DefaultTransition | None] = []
     for source in order:
         rewritten: list[Transition] = []
         for transition in automaton.transitions[source]:
@@ -103,11 +109,22 @@ def prune_unreachable[OutputT: Hashable](
                 )
             rewritten.append(Transition(transition.symbols, target))
         rows.append(tuple(rewritten))
+        default = automaton.defaults[source]
+        if default is None:
+            defaults.append(None)
+        else:
+            target = state_map[default.target]
+            if target is None:
+                raise AssertionError(
+                    "a reachable default transition must have a reachable target"
+                )
+            defaults.append(DefaultTransition(target))
     result = DFA(
         automaton.alphabet_size,
         0,
         tuple(automaton.outputs[source] for source in order),
         tuple(rows),
+        tuple(defaults),
     )
     return AutomatonTransform(
         result,
@@ -256,22 +273,29 @@ def minimize_dfa[OutputT: Hashable](
     )
 
 
-def _combined_alphabet_partition[
+def combined_alphabet_partition[
     LeftOutputT: Hashable,
     RightOutputT: Hashable,
 ](
     left: DFA[LeftOutputT],
     right: DFA[RightOutputT],
 ) -> tuple[SymbolSet, ...]:
+    """Partition a shared alphabet by both automata's transition behavior."""
     if left.alphabet_size != right.alphabet_size:
         raise ValueError("cannot compare DFAs over different alphabets")
     return _symbol_partition(
         left.alphabet_size,
-        (
-            transition.symbols
-            for automaton in (left, right)
-            for row in automaton.transitions
-            for transition in row
+        chain(
+            (
+                transition.symbols
+                for state in range(left.state_count)
+                for transition in left.effective_transitions(state)
+            ),
+            (
+                transition.symbols
+                for state in range(right.state_count)
+                for transition in right.effective_transitions(state)
+            ),
         ),
     )
 
@@ -284,7 +308,7 @@ def equivalence_counterexample[
     right: DFA[RightOutputT],
 ) -> tuple[int, ...] | None:
     """Return the shortest lexicographic word with differing output, if any."""
-    symbol_classes = _combined_alphabet_partition(left, right)
+    symbol_classes = combined_alphabet_partition(left, right)
     symbols = tuple(symbol_class.first_symbol for symbol_class in symbol_classes)
     if any(symbol is None for symbol in symbols):
         raise AssertionError("an alphabet partition must not contain empty classes")
@@ -336,6 +360,7 @@ def equivalent[
 __all__ = [
     "AutomatonTransform",
     "alphabet_partition",
+    "combined_alphabet_partition",
     "coreachable_states",
     "equivalence_counterexample",
     "equivalent",
