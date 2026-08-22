@@ -1,19 +1,22 @@
 import itertools
+import re
 import unittest
 
 from bpe2regex import CanonicalRegexBPE
 from bpe2regex.reir import (
     NEVER,
+    BooleanTokenSymbolLowerer,
     CanonicalTokenRegexCompiler,
+    Difference,
     Op,
     SymbolSet,
     TokenSymbolLowerer,
+    lower_boolean_to_core,
     raw_deflate_size,
 )
 from bpe2regex.reir.source import render_regex
 from bpe2regex.vocabulary import recover_merge_parents, reference_bpe_ids
-
-from .test_canonical_token_dfa import PARENTS, RANK_OF, TOKENS
+from tests.test_canonical_token_dfa import PARENTS, RANK_OF, TOKENS
 
 
 def _python_pattern(expression: Op) -> str:
@@ -25,8 +28,6 @@ def _python_pattern(expression: Op) -> str:
 
 class TokenSymbolLowererTests(unittest.TestCase):
     def test_token_sets_lower_to_the_same_finite_byte_language(self) -> None:
-        import re
-
         lowerer = TokenSymbolLowerer(TOKENS)
         selected = (0, 3, 6, 8, 9)
         expression = lowerer(SymbolSet.from_symbols(len(TOKENS), selected))
@@ -37,6 +38,19 @@ class TokenSymbolLowererTests(unittest.TestCase):
             lowerer(SymbolSet.empty(len(TOKENS))),
             NEVER,
         )
+
+    def test_dense_token_sets_use_a_finite_language_difference(self) -> None:
+        domain = SymbolSet.full(len(TOKENS))
+        lowerer = BooleanTokenSymbolLowerer(TOKENS, domain)
+        selected = tuple(range(1, len(TOKENS)))
+        expression = lowerer(SymbolSet.from_symbols(len(TOKENS), selected))
+        self.assertIsInstance(expression, Difference)
+
+        pattern = re.compile(
+            _python_pattern(lower_boolean_to_core(expression)).encode("ascii")
+        )
+        for rank, token in enumerate(TOKENS):
+            self.assertEqual(pattern.fullmatch(token) is not None, rank in selected)
 
 
 class CanonicalTokenRegexCompilerTests(unittest.TestCase):
@@ -126,6 +140,26 @@ class CanonicalTokenRegexCompilerTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "positive"):
             compiler.compile_ir(elimination_beam_width=0)
+
+    def test_boolean_token_labels_lower_before_source_emission(self) -> None:
+        compiled = CanonicalTokenRegexCompiler(
+            TOKENS,
+            PARENTS,
+            base_token_count=3,
+        ).compile_python(merge_limit=1, boolean_token_labels=True)
+        self.assertIsNotNone(compiled.ir.symbolic_expression)
+        self.assertGreater(compiled.ir.metrics.boolean_lowering_seconds, 0.0)
+        with CanonicalRegexBPE(compiled) as program:
+            for length in range(6):
+                for values in itertools.product(b"abc", repeat=length):
+                    word = bytes(values)
+                    match = program.fullmatch(word)
+                    self.assertIsNotNone(match)
+                    assert match is not None
+                    self.assertEqual(
+                        match.token_ids,
+                        reference_bpe_ids(word, TOKENS, RANK_OF, cutoff=4),
+                    )
 
 
 class CanonicalRegexValidationTests(unittest.TestCase):

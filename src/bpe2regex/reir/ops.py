@@ -200,7 +200,12 @@ def structural_key(op: Op) -> tuple[Any, ...]:
         case Alternate(alternatives):
             return (6, tuple(structural_key(item) for item in alternatives))
         case _ if isinstance(op, PureOp):
-            return (7, type(op).__module__, type(op).__qualname__, repr(op))
+            return (
+                7,
+                type(op).__module__,
+                type(op).__qualname__,
+                tuple(structural_key(operand) for operand in op.operands),
+            )
         case _:
             raise TypeError(f"{type(op).__name__} does not have pure regex semantics")
 

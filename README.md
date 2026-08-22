@@ -114,6 +114,12 @@ accept state は bool だけでなく hashable な observable output を持て�
 
 `TokenSymbolLowerer` は token-rank の `SymbolSet` を token bytes の prefix-factored pure REIR へ変換します. `ArdenEliminator` は byte alphabet 固定ではなく任意の label lowerer と開始 state を受け取れるため, token DFA の residual language も同じ基盤で処理できます. `CanonicalTokenRegexCompiler` は開始 edge だけを `Literal(token) · Tag(rank)` とし, 残りを pure token language として SCC-aware elimination した tagged REIR / Python regex source を生成します.
 
+`bpe2regex.reir.boolean` は core 7 op の通常形とは分離した transient dialect として `Universal(Σ*)`, `Intersect`, `Complement`, `Difference` を提供します. union の可換 canonicalization と同様に intersection を flat / sorted / unique にし, double complement, identity, annihilator, `A ∩ ¬A`, trivial difference を constructor で fold します. `Complement(CharSet)` は文字 class の補集合ではなく `Σ* \\ L(CharSet)` であり, 空文字と複数 byte 列も含むため `CharSet.complement()` へは fold しません.
+
+Boolean dialect は exact nullable と conservative `First`, 4 op と core 7 op 全ての Brzozowski derivative, `(structural op, byte)` memoization, residual ごとの byte grouping を持ちます. source emitter は Boolean op を直接受理しません. `BooleanDerivativeDFACompiler` で byte DFA に変換し, residual minimization と SCC-aware Arden elimination を通すことで core 7 op へ戻します. tagged graph では最大 pure subtree 全体を DFA 化する経路に加え, 最内の Boolean op だけを局所 conversion して周囲の core 構造を保つ経路を用意しています.
+
+`BooleanTokenSymbolLowerer` は有効 token の有限 byte 言語を universe とし, dense label を `Difference(token_universe, excluded_tokens)` で表現します. これは `Σ*` に対する complement ではないため token 境界を保存します. `compile_python(boolean_token_labels=True)` で opt-in でき, symbolic tagged IR を保持した後, source emission 前に Boolean op を局所的に core へ変換します.
+
 `CanonicalEliminationOrderSearcher` は SCC 間の順序を保ち, SCC 内の tagged GNFA elimination 順序を beam 探索します. partial candidate は operation occurrence / literal byte の cheap cost で prune し, 完成候補は Python source の raw-DEFLATE / source byte 数で選びます. `compile_python(elimination_beam_width=3)` のように opt-in でき, 固定 SCC 順も候補0として必ず残します.
 
 これは実験 API として接続済みですが, `.artifacts` の format version 1 と既定の `RegexBPE` は引き続き lookup regex + heap BPE です. full r50k canonical regex は現在の elimination では生成不能な大きさになるため, production artifact への切替はまだ行っていません.
@@ -160,6 +166,27 @@ regex size は stepwise かつ強く superlinear なので full-size の信頼�
 
 ```bash
 uv run python tools/measure_canonical_r50k.py
+```
+
+### Boolean dense label の実測
+
+r50k prefix の同じ minimized DFA と beam width 3 に対し, token label を直接 trie 化した場合と, dense label だけを有限 universe からの `Difference` にした場合を比較しました. `unique ops` は source tree へ展開する前の共有 DAG node 数です. Boolean source は局所 conversion で core 7 op に戻した後の値です.
+
+| merges | direct unique ops | Boolean symbolic unique ops | direct source / DEFLATE | Boolean→core source / DEFLATE |
+|---:|---:|---:|---:|---:|
+| 0 | 772 | 772 | 1,807 / 442 | 1,807 / 442 |
+| 1 | 794 | 794 | 1,961 / 500 | 1,965 / 506 |
+| 3 | 835 | 829 | 2,510 / 582 | 2,522 / 586 |
+| 5 | 897 | 878 | 4,104 / 679 | 4,132 / 682 |
+| 10 | 1,163 | 1,161 | 48,951 / 1,359 | 49,075 / 1,357 |
+| 15 | 1,370 | 1,341 | 131,248 / 2,199 | 131,500 / 2,205 |
+
+unique DAG は merge 15 で 2.1% 小さくなりますが, `Difference` の共有 universe は tree/source へ繰り返し展開されるため source は 252 bytes, DEFLATE は 6 bytes悪化しました. merge 10 の DEFLATE 2 bytes改善は前後の prefix で再現せず, 選択根拠にできる大きさではありません. 現状の Python regex source を最終成果物とする限り dense Boolean label の実益はなく, 既定経路を直接 trie のままにしています. Boolean node を共有参照や native set subtraction のまま保持できる graph runtime / target が加わった場合には再評価できます.
+
+計測と runtime oracle 比較は次で再実行できます.
+
+```bash
+uv run python tools/measure_boolean_r50k.py
 ```
 
 ECMAScript emitter は merge-pair FST の prefix-free な trie frontier をボトムアップ DP で選びます. 各 suffix regex のキャプチャ数をマージ規則数の平方根を切り上げた値以下に制限しながら, prefix・regex・side-table 境界の非圧縮 serialized cost 合計が最小になる cut を採用します. 共通 prefix は regex から除いて dispatch table へ移すため, modulo hash bucket で失われていた trie の局所性を維持できます.

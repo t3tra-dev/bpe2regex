@@ -1,8 +1,13 @@
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
+from ..boolean import (
+    BOOLEAN_BUILDER,
+    contains_boolean,
+    lower_boolean_ops_to_core,
+)
 from ..builder import DEFAULT_BUILDER, RegexBuilder
 from ..cost import raw_deflate_size
 from ..ops import EPSILON, NEVER, Literal, Op, PureOp
@@ -77,6 +82,46 @@ class TokenSymbolLowerer:
                 raise ValueError("token byte strings must be unique")
             node.terminal = True
         result = self._lower_node(root)
+        self._cache[symbols.bits] = result
+        return result
+
+    def __call__(self, symbols: SymbolSet) -> Op:
+        return self.lower(symbols)
+
+
+class BooleanTokenSymbolLowerer:
+    """Represent dense finite token labels as universe-minus-exceptions."""
+
+    def __init__(
+        self,
+        tokens: Sequence[bytes | None],
+        domain: SymbolSet,
+        *,
+        builder: RegexBuilder = DEFAULT_BUILDER,
+    ) -> None:
+        if domain.alphabet_size != len(tokens):
+            raise ValueError("token domain and vocabulary have different alphabets")
+        self.tokens = tuple(tokens)
+        self.domain = domain
+        self.direct = TokenSymbolLowerer(tokens, builder=builder)
+        self.universe = self.direct(domain)
+        self._cache: dict[int, Op] = {}
+
+    def lower(self, symbols: SymbolSet) -> Op:
+        if symbols.alphabet_size != self.domain.alphabet_size:
+            raise ValueError("token symbols and domain have different alphabets")
+        if not symbols.issubset(self.domain):
+            raise ValueError("token symbols must belong to the active domain")
+        cached = self._cache.get(symbols.bits)
+        if cached is not None:
+            return cached
+        direct = self.direct(symbols)
+        excluded = self.domain - symbols
+        result = (
+            BOOLEAN_BUILDER.difference(self.universe, self.direct(excluded))
+            if excluded and len(excluded) < len(symbols)
+            else direct
+        )
         self._cache[symbols.bits] = result
         return result
 
@@ -226,6 +271,7 @@ class CanonicalTokenRegexMetrics:
     elimination_seconds: float
     elimination_order: tuple[int, ...]
     explored_elimination_candidates: int
+    boolean_lowering_seconds: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +279,7 @@ class CanonicalTokenRegexIRResult:
     expression: Op
     automaton: DFA[bool]
     metrics: CanonicalTokenRegexMetrics
+    symbolic_expression: Op | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,6 +292,8 @@ class CanonicalTokenRegexSource:
 def _prepare_canonical_token_graph(
     automaton: DFA[bool],
     tokens: Sequence[bytes | None],
+    *,
+    lower_symbols: Callable[[SymbolSet], Op] | None = None,
 ) -> tuple[_TaggedGeneralizedAutomaton, frozenset[int]] | None:
     if automaton.alphabet_size != len(tokens):
         raise ValueError("canonical DFA and vocabulary have different alphabets")
@@ -259,7 +308,8 @@ def _prepare_canonical_token_graph(
         source,
         final,
     )
-    lower_symbols = TokenSymbolLowerer(tokens)
+    if lower_symbols is None:
+        lower_symbols = TokenSymbolLowerer(tokens)
 
     # Only synthetic-source edges emit. A full match therefore validates the
     # complete suffix while its sole participating empty capture marks the end
@@ -296,9 +346,15 @@ def _prepare_canonical_token_graph(
 def lower_canonical_token_dfa(
     automaton: DFA[bool],
     tokens: Sequence[bytes | None],
+    *,
+    lower_symbols: Callable[[SymbolSet], Op] | None = None,
 ) -> Op:
     """Lower a canonical-token DFA to a first-boundary tagged byte regex."""
-    prepared = _prepare_canonical_token_graph(automaton, tokens)
+    prepared = _prepare_canonical_token_graph(
+        automaton,
+        tokens,
+        lower_symbols=lower_symbols,
+    )
     if prepared is None:
         return NEVER
     graph, useful = prepared
@@ -350,8 +406,14 @@ class CanonicalEliminationOrderSearcher:
         self,
         automaton: DFA[bool],
         tokens: Sequence[bytes | None],
+        *,
+        lower_symbols: Callable[[SymbolSet], Op] | None = None,
     ) -> CanonicalEliminationSearchResult:
-        prepared = _prepare_canonical_token_graph(automaton, tokens)
+        prepared = _prepare_canonical_token_graph(
+            automaton,
+            tokens,
+            lower_symbols=lower_symbols,
+        )
         if prepared is None:
             return CanonicalEliminationSearchResult(
                 NEVER,
@@ -474,6 +536,7 @@ class CanonicalTokenRegexCompiler:
         checkpoint_interval: int = 1_000,
         progress: CanonicalTokenDFAProgress | None = None,
         elimination_beam_width: int | None = None,
+        boolean_token_labels: bool = False,
     ) -> CanonicalTokenRegexIRResult:
         dfa_result = self.dfa_compiler.compile(
             merge_limit=merge_limit,
@@ -490,15 +553,40 @@ class CanonicalTokenRegexCompiler:
         )
         minimization_seconds = time.perf_counter() - minimization_started
         elimination_started = time.perf_counter()
+        lower_symbols: Callable[[SymbolSet], Op] | None = None
+        if boolean_token_labels:
+            useful = coreachable_states(automaton)
+            domain = SymbolSet.empty(automaton.alphabet_size)
+            for state in useful:
+                for transition in automaton.effective_transitions(state):
+                    if transition.target in useful:
+                        domain |= transition.symbols
+            lower_symbols = BooleanTokenSymbolLowerer(
+                self.tokens,
+                domain,
+            )
         if elimination_beam_width is None:
-            expression = lower_canonical_token_dfa(automaton, self.tokens)
+            expression = lower_canonical_token_dfa(
+                automaton,
+                self.tokens,
+                lower_symbols=lower_symbols,
+            )
             useful = coreachable_states(automaton)
             elimination_order = SCCEliminationOrder().order(automaton, useful)
             explored_candidates = 0
         else:
             search = CanonicalEliminationOrderSearcher(
-                beam_width=elimination_beam_width
-            ).search(automaton, self.tokens)
+                beam_width=elimination_beam_width,
+                final_cost=(
+                    _boolean_python_deflate_cost
+                    if boolean_token_labels
+                    else _python_deflate_cost
+                ),
+            ).search(
+                automaton,
+                self.tokens,
+                lower_symbols=lower_symbols,
+            )
             expression = search.expression
             elimination_order = search.order
             explored_candidates = search.explored_candidates
@@ -517,8 +605,28 @@ class CanonicalTokenRegexCompiler:
             ),
         )
 
-    def compile_python(self, **options: Any) -> CanonicalTokenRegexSource:
+    def compile_python(
+        self,
+        *,
+        boolean_lowering_max_states: int | None = 10_000,
+        **options: Any,
+    ) -> CanonicalTokenRegexSource:
         ir = self.compile_ir(**options)
+        if contains_boolean(ir.expression):
+            lowering_started = time.perf_counter()
+            expression = lower_boolean_ops_to_core(
+                ir.expression,
+                max_states=boolean_lowering_max_states,
+            )
+            ir = replace(
+                ir,
+                expression=expression,
+                metrics=replace(
+                    ir.metrics,
+                    boolean_lowering_seconds=(time.perf_counter() - lowering_started),
+                ),
+                symbolic_expression=ir.expression,
+            )
         capture_ranks: list[int] = []
         source = render_tagged_regex(
             ir.expression,
@@ -533,7 +641,16 @@ def _emit_capture(capture_ranks: list[int], rank: int) -> str:
     return "()"
 
 
+def _boolean_python_deflate_cost(root: Op) -> tuple[int, ...]:
+    try:
+        core = lower_boolean_ops_to_core(root)
+    except RuntimeError:
+        return (2**63 - 1, *_occurrence_cost(root))
+    return _python_deflate_cost(core)
+
+
 __all__ = [
+    "BooleanTokenSymbolLowerer",
     "CanonicalEliminationOrderSearcher",
     "CanonicalEliminationSearchResult",
     "CanonicalTokenRegexCompiler",

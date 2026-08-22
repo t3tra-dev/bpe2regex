@@ -27,6 +27,7 @@ from .canonical import (
     CanonicalTokenDFAResult,
 )
 from .canonical_regex import (
+    BooleanTokenSymbolLowerer,
     CanonicalEliminationOrderSearcher,
     CanonicalEliminationSearchResult,
     CanonicalTokenRegexCompiler,
@@ -66,6 +67,7 @@ __all__ = [
     "AutomatonCompilationResult",
     "AutomatonSemanticAbsorber",
     "AutomatonTransform",
+    "BooleanTokenSymbolLowerer",
     "CanonicalEliminationOrderSearcher",
     "CanonicalEliminationSearchResult",
     "CanonicalTokenDFABudgetExceeded",
