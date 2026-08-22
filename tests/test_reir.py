@@ -402,6 +402,20 @@ class PureRegexStructureDiscoveryTests(unittest.TestCase):
             "(?:ab){2,3}",
         )
 
+    def test_renderer_selects_derivative_factoring_only_after_deflate_wins(
+        self,
+    ) -> None:
+        tail = literal(b"a-long-common-residual-with-locality-0123456789")
+        expression = alternate(
+            *(concat(literal(bytes((head,))), tail) for head in b"abde"),
+            literal(b"cx"),
+        )
+        self.assertEqual(
+            render_regex(expression, escape_byte=_ascii_escape),
+            "(?:cx|[abde]a\\x2dlong\\x2dcommon\\x2dresidual"
+            "\\x2dwith\\x2dlocality\\x2d0123456789)",
+        )
+
     def test_optimizer_preserves_random_small_languages_exhaustively(self) -> None:
         randomizer = random.Random(20_260_821)
         leaves = (

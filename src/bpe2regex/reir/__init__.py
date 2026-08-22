@@ -25,6 +25,8 @@ from .builder import (
 )
 from .compiler import CompilationResult, RegexCompiler
 from .cost import (
+    ArtifactSerializer,
+    ArtifactSizeCostModel,
     CostCallback,
     CostKey,
     CostKeyValue,
@@ -40,6 +42,14 @@ from .cost import (
     raw_deflate_size,
     utf8_size,
 )
+from .derivative import (
+    DerivativeEngine,
+    DerivativeGroup,
+    derivative,
+    expand_derivatives,
+    group_derivatives,
+)
+from .derivative_search import DerivativeFactoringGenerator
 from .lowering import (
     FunctionalOpLowerer,
     Lowerer,
@@ -111,6 +121,8 @@ __all__ = [
     "Alternate",
     "AnalysisManager",
     "AnalysisType",
+    "ArtifactSerializer",
+    "ArtifactSizeCostModel",
     "BenchmarkResult",
     "ByteEscape",
     "CandidateCallback",
@@ -130,6 +142,9 @@ __all__ = [
     "CostedCandidate",
     "DataFlowAnalysis",
     "DeflatedSourceCostModel",
+    "DerivativeEngine",
+    "DerivativeFactoringGenerator",
+    "DerivativeGroup",
     "DiscoverRepeatAlternativesPattern",
     "Epsilon",
     "FactorCommonAffixesPattern",
@@ -177,6 +192,9 @@ __all__ = [
     "benchmark_compiler",
     "charset",
     "concat",
+    "derivative",
+    "expand_derivatives",
+    "group_derivatives",
     "literal",
     "raw_deflate_size",
     "render_regex",
