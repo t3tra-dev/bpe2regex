@@ -7,6 +7,7 @@ from bpe2regex.reir import (
     DFA,
     NEVER,
     ArdenEliminator,
+    CharSet,
     Op,
     RegexCompiler,
     RegexSourceLowerer,
@@ -163,6 +164,28 @@ class ArdenEliminationTests(unittest.TestCase):
         non_byte = DFA.accepting(2, 0, (), ((),))
         with self.assertRaisesRegex(ValueError, "byte-alphabet"):
             ArdenEliminator().lower(non_byte)
+
+    def test_custom_labels_and_arbitrary_start_lower_finite_alphabets(self) -> None:
+        automaton = DFA.accepting(
+            2,
+            0,
+            (1,),
+            (
+                (Transition(SymbolSet.singleton(2, 0), 1),),
+                (Transition(SymbolSet.singleton(2, 1), 1),),
+            ),
+        )
+        eliminator = ArdenEliminator(
+            label_lowerer=lambda symbols: CharSet(
+                ord("a") + symbol for symbol in symbols
+            )
+        )
+        from_start = _compile(eliminator.lower(automaton))
+        from_accepting = _compile(eliminator.lower_from(automaton, 1))
+        for value in (b"a", b"ab", b"abbb"):
+            self.assertIsNotNone(from_start.fullmatch(value))
+        for value in (b"", b"b", b"bbb"):
+            self.assertIsNotNone(from_accepting.fullmatch(value))
 
     def test_random_small_dfas_match_lowered_reir_exhaustively(self) -> None:
         randomizer = random.Random(20_260_822)

@@ -14,6 +14,7 @@ from bpe2regex.reir import (
     equivalence_counterexample,
     equivalent,
     minimize_dfa,
+    prune_dead_states,
     prune_unreachable,
     reachable_states,
 )
@@ -178,6 +179,41 @@ class AutomatonAnalysisTests(unittest.TestCase):
             pruned.blocks, (frozenset((0,)), frozenset((1,)), frozenset((2,)))
         )
         self.assertEqual(pruned.automaton.state_count, 3)
+
+    def test_dead_state_pruning_recovers_partial_acceptance_automaton(self) -> None:
+        automaton = DFA.accepting(
+            2,
+            0,
+            (1,),
+            (
+                (
+                    Transition(_symbols(2, 0), 1),
+                    Transition(_symbols(2, 1), 2),
+                ),
+                (Transition(_symbols(2, 0, 1), 1),),
+                (Transition(_symbols(2, 0, 1), 2),),
+            ),
+        )
+        pruned = prune_dead_states(automaton)
+        self.assertEqual(pruned.state_map, (0, 1, None))
+        self.assertEqual(pruned.automaton.state_count, 2)
+        self.assertIsNone(pruned.automaton.transition(0, 1))
+        for word in _words(2, 4):
+            self.assertEqual(
+                pruned.automaton.accepts(word),
+                automaton.accepts(word),
+            )
+
+    def test_pruning_an_empty_language_keeps_one_rejecting_start(self) -> None:
+        automaton = DFA.accepting(
+            2,
+            0,
+            (),
+            ((Transition(_symbols(2, 0, 1), 1),), ()),
+        )
+        pruned = prune_dead_states(automaton)
+        self.assertEqual(pruned.automaton, DFA(2, 0, (None,), ((),)))
+        self.assertEqual(pruned.state_map, (0, None))
 
 
 class DFAMinimizationTests(unittest.TestCase):

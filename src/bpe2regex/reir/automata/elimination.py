@@ -1,11 +1,14 @@
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Hashable, Iterable
+from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass
 
 from ..builder import DEFAULT_BUILDER, RegexBuilder
 from ..ops import EPSILON, NEVER, Op, PureOp
 from .ir import DFA
+from .labels import SymbolSet
+
+type LabelLowerer = Callable[[SymbolSet], Op]
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,9 +207,14 @@ class GeneralizedAutomaton:
         )
 
 
-def _reachable_from_start[OutputT: Hashable](automaton: DFA[OutputT]) -> set[int]:
-    reachable = {automaton.start}
-    pending = deque((automaton.start,))
+def _reachable_from[OutputT: Hashable](
+    automaton: DFA[OutputT],
+    start: int,
+) -> set[int]:
+    if not 0 <= start < automaton.state_count:
+        raise ValueError("an Arden start state is out of range")
+    reachable = {start}
+    pending = deque((start,))
     while pending:
         state = pending.popleft()
         for transition in automaton.effective_transitions(state):
@@ -243,31 +251,35 @@ class ArdenEliminator:
         order: EliminationOrder | None = None,
         *,
         builder: RegexBuilder = DEFAULT_BUILDER,
+        label_lowerer: LabelLowerer | None = None,
     ) -> None:
         self.order = SCCEliminationOrder() if order is None else order
         self.builder = builder
+        self.label_lowerer = label_lowerer
 
     def _useful_states[OutputT: Hashable](
         self,
         automaton: DFA[OutputT],
+        start: int,
         final_states: frozenset[int],
     ) -> frozenset[int]:
         if any(not 0 <= state < automaton.state_count for state in final_states):
             raise ValueError("an Arden final state is out of range")
         return frozenset(
-            _reachable_from_start(automaton) & _coreachable_to(automaton, final_states)
+            _reachable_from(automaton, start) & _coreachable_to(automaton, final_states)
         )
 
-    def prepare[OutputT: Hashable](
+    def prepare_from[OutputT: Hashable](
         self,
         automaton: DFA[OutputT],
+        start: int,
         final_states: Iterable[int],
     ) -> tuple[GeneralizedAutomaton, frozenset[int]] | None:
-        if automaton.alphabet_size != 256:
+        if self.label_lowerer is None and automaton.alphabet_size != 256:
             raise ValueError("only byte-alphabet DFAs can lower to pure REIR")
         finals = frozenset(final_states)
-        useful = self._useful_states(automaton, finals)
-        if automaton.start not in useful:
+        useful = self._useful_states(automaton, start, finals)
+        if start not in useful:
             return None
 
         source = automaton.state_count
@@ -278,25 +290,34 @@ class ArdenEliminator:
             final,
             builder=self.builder,
         )
-        graph.add_edge(source, automaton.start, EPSILON)
+        graph.add_edge(source, start, EPSILON)
         for state in sorted(useful):
             for transition in automaton.effective_transitions(state):
                 if transition.target in useful:
-                    graph.add_edge(
-                        state,
-                        transition.target,
-                        transition.symbols.to_reir(),
+                    label = (
+                        transition.symbols.to_reir()
+                        if self.label_lowerer is None
+                        else self.label_lowerer(transition.symbols)
                     )
+                    graph.add_edge(state, transition.target, label)
             if state in finals:
                 graph.add_edge(state, final, EPSILON)
         return graph, useful
 
-    def lower_states[OutputT: Hashable](
+    def prepare[OutputT: Hashable](
         self,
         automaton: DFA[OutputT],
         final_states: Iterable[int],
+    ) -> tuple[GeneralizedAutomaton, frozenset[int]] | None:
+        return self.prepare_from(automaton, automaton.start, final_states)
+
+    def lower_from_states[OutputT: Hashable](
+        self,
+        automaton: DFA[OutputT],
+        start: int,
+        final_states: Iterable[int],
     ) -> Op:
-        prepared = self.prepare(automaton, final_states)
+        prepared = self.prepare_from(automaton, start, final_states)
         if prepared is None:
             return NEVER
         graph, useful = prepared
@@ -308,6 +329,20 @@ class ArdenEliminator:
         for state in order:
             graph.eliminate(state)
         return graph.expression
+
+    def lower_states[OutputT: Hashable](
+        self,
+        automaton: DFA[OutputT],
+        final_states: Iterable[int],
+    ) -> Op:
+        return self.lower_from_states(automaton, automaton.start, final_states)
+
+    def lower_from[OutputT: Hashable](
+        self,
+        automaton: DFA[OutputT],
+        start: int,
+    ) -> Op:
+        return self.lower_from_states(automaton, start, automaton.accepting_states)
 
     def lower[OutputT: Hashable](self, automaton: DFA[OutputT]) -> Op:
         return self.lower_states(automaton, automaton.accepting_states)
@@ -352,6 +387,7 @@ __all__ = [
     "ArdenEliminator",
     "EliminationOrder",
     "GeneralizedAutomaton",
+    "LabelLowerer",
     "OutputLanguage",
     "SCCEliminationOrder",
     "lower_dfa",

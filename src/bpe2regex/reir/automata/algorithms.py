@@ -133,6 +133,53 @@ def prune_unreachable[OutputT: Hashable](
     )
 
 
+def prune_dead_states[OutputT: Hashable](
+    automaton: DFA[OutputT],
+) -> AutomatonTransform[OutputT]:
+    """Remove states that cannot reach an observable output.
+
+    Edges into removed states become missing transitions, recovering a compact
+    partial DFA after algorithms such as minimization have introduced a total
+    rejecting sink.
+    """
+    coreachable = coreachable_states(automaton)
+    reachable = reachable_states(automaton)
+    order = tuple(state for state in reachable if state in coreachable)
+    if automaton.start not in coreachable:
+        state_map = tuple(
+            0 if state == automaton.start else None
+            for state in range(automaton.state_count)
+        )
+        return AutomatonTransform(
+            DFA(automaton.alphabet_size, 0, (None,), ((),)),
+            state_map,
+            (frozenset((automaton.start,)),),
+        )
+
+    state_map_list: list[int | None] = [None] * automaton.state_count
+    for target, source in enumerate(order):
+        state_map_list[source] = target
+    rows: list[tuple[Transition, ...]] = []
+    for source in order:
+        rewritten: list[Transition] = []
+        for transition in automaton.effective_transitions(source):
+            target = state_map_list[transition.target]
+            if target is not None:
+                rewritten.append(Transition(transition.symbols, target))
+        rows.append(tuple(rewritten))
+    result = DFA(
+        automaton.alphabet_size,
+        0,
+        tuple(automaton.outputs[source] for source in order),
+        tuple(rows),
+    )
+    return AutomatonTransform(
+        result,
+        tuple(state_map_list),
+        tuple(frozenset((source,)) for source in order),
+    )
+
+
 def _canonical_reindex[OutputT: Hashable](
     automaton: DFA[OutputT],
 ) -> AutomatonTransform[OutputT]:
@@ -365,6 +412,7 @@ __all__ = [
     "equivalence_counterexample",
     "equivalent",
     "minimize_dfa",
+    "prune_dead_states",
     "prune_unreachable",
     "reachable_states",
 ]
