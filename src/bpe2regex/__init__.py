@@ -1,3 +1,4 @@
+from .boundary_program import BoundaryRegexBPE
 from .build import BuildResult, build_regex_artifact
 from .canonical_program import CanonicalRegexBPE
 from .encoding import CL100K, O200K, P50K, R50K, Encoding
@@ -16,6 +17,7 @@ __all__ = [
     "O200K",
     "P50K",
     "R50K",
+    "BoundaryRegexBPE",
     "BuildResult",
     "BytePattern",
     "CanonicalRegexBPE",

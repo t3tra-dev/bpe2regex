@@ -1,7 +1,7 @@
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
-from .reir import Op
+from .reir.ops import Op
 from .reir.tagged import TAGGED_BUILDER, tagged
 
 type OutputLowering = Callable[[int], Op]
