@@ -96,6 +96,12 @@ Repeat(body, min, max | None)
 
 pure REIR のproduction source loweringは`StructureDiscoveryPass`の後にこのgeneratorを実行し, artifact全体がraw DEFLATEされることに合わせて`DeflatedSourceCostModel`で選択します. tag付きlookup regexは出力順とrank semanticsを持つため, pure derivative factoringの対象には含めません.
 
+`bpe2regex.reir.automata` は次段の control-flow compiler 用の有限 alphabet automaton IR です. `SymbolSet` は alphabet size と canonical bitset を持ち, union / intersection / difference / complement を label algebra として提供します. byte alphabet の label は pure REIR の `CharSet` へ変換できます. `DFA` は互いに素な `SymbolSet` edge を持つ immutable な partial deterministic automaton で, 未定義 transition は reject を意味します.
+
+accept state は bool だけでなく hashable な observable output を持てます. したがって residual quotient は accept/reject が一致するだけの state を併合せず, rank 等の output まで一致する state だけを併合します. `minimize_dfa()` は到達不能 state の除去, 暗黙 reject sink による totalization, global symbol equivalence class の構築, output-aware Hopcroft refinement, BFS 順の canonical reindex を行い, 元 state から quotient state への map も返します. `equivalence_counterexample()` は二つの partial DFA に対し, output が異なる最短かつ辞書順最小の入力列を返します.
+
+この段階では REIR への state elimination はまだ行いません. SCC-aware Arden elimination, default transition の構文上の表現, elimination 順序の cost 探索, automaton 段階の semantic absorption は, この基盤の上へ独立した analysis / transform / lowering として追加します.
+
 ### Canonical tokenizer の matching 契約
 
 次段の canonical-token compiler が生成する monster regex は, 一回の `fullmatch` から全 token 境界を返すものとはしません. pre-tokenizer が生成した各 piece に対し, 同一の compiled regex を現在位置へ anchored `match` し, 一回の非空 match から一つの token rank と終端位置を送出します. driver は match 終端へ位置を進め, piece 全体を消費するまでこれを繰り返します.
