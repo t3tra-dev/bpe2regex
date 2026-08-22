@@ -94,6 +94,8 @@ Repeat(body, min, max | None)
 
 `DerivativeFactoringGenerator` はnullabilityとgrouped derivativeから元のlanguageを再構築し, `CandidateSelectionPass`へ同値候補として渡します. original IRはselection passが候補0として保持するため, factoringは強制rewriteになりません. `SourceSizeCostModel`, `DeflatedSourceCostModel`, または完全なartifact bytesを受け取る`ArtifactSizeCostModel`で候補が勝った場合だけ採用されます.
 
+pure REIR のproduction source loweringは`StructureDiscoveryPass`の後にこのgeneratorを実行し, artifact全体がraw DEFLATEされることに合わせて`DeflatedSourceCostModel`で選択します. tag付きlookup regexは出力順とrank semanticsを持つため, pure derivative factoringの対象には含めません.
+
 ### Canonical tokenizer の matching 契約
 
 次段の canonical-token compiler が生成する monster regex は, 一回の `fullmatch` から全 token 境界を返すものとはしません. pre-tokenizer が生成した各 piece に対し, 同一の compiled regex を現在位置へ anchored `match` し, 一回の非空 match から一つの token rank と終端位置を送出します. driver は match 終端へ位置を進め, piece 全体を消費するまでこれを繰り返します.

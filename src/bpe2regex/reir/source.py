@@ -1,9 +1,12 @@
 from collections.abc import Callable
 
 from .compiler import RegexCompiler
+from .cost import DeflatedSourceCostModel
+from .derivative_search import DerivativeFactoringGenerator
 from .lowering import FunctionalOpLowerer, LoweringContext, RuleBasedLowerer
 from .ops import Alternate, CharSet, Concat, Epsilon, Literal, Never, Op, Repeat
 from .passes import StructureDiscoveryPass
+from .search import CandidateSelectionPass
 
 type ByteEscape = Callable[[int], str]
 
@@ -125,9 +128,16 @@ class RegexSourceLowerer(RuleBasedLowerer[str]):
 
 def render_regex(expression: Op, *, escape_byte: ByteEscape) -> str:
     """Optimize pure REIR and compile it into target regex source."""
+    lowerer = RegexSourceLowerer(escape_byte=escape_byte)
     compiler = RegexCompiler(
-        RegexSourceLowerer(escape_byte=escape_byte),
-        passes=(StructureDiscoveryPass(),),
+        lowerer,
+        passes=(
+            StructureDiscoveryPass(),
+            CandidateSelectionPass(
+                (DerivativeFactoringGenerator(),),
+                DeflatedSourceCostModel(lowerer),
+            ),
+        ),
     )
     return compiler.compile(expression)
 
