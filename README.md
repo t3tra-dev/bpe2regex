@@ -116,6 +116,10 @@ accept state は bool だけでなく hashable な observable output を持て�
 
 `CanonicalAdjacencyCompiler` は同じ universal DFA の 1-local 性を利用し, transition matrix を materialize しません. merge ごとに token column を左親から clone し, middle state の row を clone して最大2 cellの deny override を記録します. cell query は state/token の birth order が新しい側の parent を辿るため, 後から作られた token descendant と row snapshot の意味を正確に保ちます. `to_dfa()` は小 prefix の equivalence 検証用にだけ明示的な cell budget 付きで用意しています.
 
+`CanonicalLazyQuotientCompiler` はこのpersistent表現を直接minimizeします. universal canonical DFAでは全stateがacceptingで, 許可されたtokenのtargetはsource stateに依存しません. そのためreachable state同士のresidualが等しいことは, final active tokenに対するdeny集合が等しいことと同値です. deny集合は「token自身と, row clone後に生まれた直接child以下の全clone subtree」を表す`TokenCone`のcanonical antichainとして保持します. thresholdを時刻そのものではなく直接child列のcutoffへ正規化するため, 異なるmerge時刻から生じた同じ集合も同一signatureになります.
+
+`CanonicalLazyBoundaryEliminator` はquotient rowを要求時にだけtarget別token groupへ展開し, 明示`DFA`を作らずmarked GNFAへstreamします. state数, symbol check数, transition group数, intermediate edge数, expression occurrence数のbudgetを各段階で検査します. `CanonicalLazyBoundaryRegexCompiler` がpersistent constructionから`BoundaryRegexBPE`で実行できる2-regex sourceまでを接続します.
+
 `TokenSymbolLowerer` は token-rank の `SymbolSet` を token bytes の prefix-factored pure REIR へ変換します. `ArdenEliminator` は byte alphabet 固定ではなく任意の label lowerer と開始 state を受け取れるため, token DFA の residual language も同じ基盤で処理できます. `CanonicalTokenRegexCompiler` は開始 edge だけを `Literal(token) · Tag(rank)` とし, 残りを pure token language として SCC-aware elimination した tagged REIR / Python regex source を生成します.
 
 `CanonicalBoundaryRegexCompiler` は開始 edge を `token-language · Boundary` とし, rank ごとの `Tag` を共通 marker へ置き換えます. `BoundaryRegexBPE` は suffix 全体の boundary regex を繰り返し `fullmatch` し, 唯一参加した capture 位置までの bytes を二本目の静的 token-to-rank regex へ `fullmatch` して rank を得ます. `BoundaryCostObjective` は boundary pattern と token lookup の両 source, 連結 raw-DEFLATE, または capture-rank table と container を含む artifact 全体を選択目的にできます.
@@ -178,10 +182,39 @@ uv run python tools/measure_canonical_r50k.py
 
 2026-08-23 の実測では, `CanonicalAdjacencyCompiler` は full r50k の50,000 mergesを0.164秒で構築しました. 50,001 states × 50,256 active tokens = 2,512,850,256 logical cellsに対し, state/token parent linkとdeny overrideを合わせたpersistent recordは250,501個です. dense cell比10,031倍, u32配列へ詰めた場合の理論payloadは1,204,056 bytesです. これはPython objectの実メモリ量ではなく, fieldを固定幅整数へserializeした下限寄りの値です.
 
-state cloneの最大深さは330, token cloneは7で, 100,000 cell sampleのtransition densityは約96.6%でした. prefix 10 / 100 / 500については現行のdense `CanonicalTokenDFACompiler` とそれぞれ2,926 / 35,956 / 378,756 active cellを全比較し一致しています. これでfull adjacencyの構築時爆発は止まりましたが, 現行のminimizationとGNFA eliminationはまだ`DFA`の明示rowを要求するため, full monster regexの生成まで解決したわけではありません.
+state cloneの最大深さは330, token cloneは7で, 100,000 cell sampleのtransition densityは約96.6%でした. prefix 10 / 100 / 500については現行のdense `CanonicalTokenDFACompiler` とそれぞれ2,926 / 35,956 / 378,756 active cellを全比較し一致しています.
 
 ```bash
 uv run python tools/measure_persistent_r50k.py
+```
+
+lazy quotientを接続した2026-08-23の実測では, full r50kをdense rowなしで次まで進められました.
+
+```text
+50,001 persistent states
+   ↓ reachable target states
+14,639 reachable states
+   ↓ canonical TokenCone signatures
+14,424 residual quotient states
+```
+
+adjacency構築は0.056秒, quotientは0.683秒で, canonical signature全体は369,041 cones, stateあたり最大330 conesでした. 入力側の2,512,850,256 cellsを走査せずにquotientまで到達します. 一方, quotient後にも`14,424 × 50,256 = 724,892,544` logical cellsが残るため, 既定elimination budgetはstate数で停止し, materialized row数は0です.
+
+小prefixでは新旧の固定SCC eliminationが同一sourceを生成し, `BoundaryRegexBPE`とreference BPEも一致しました. 時間は次の通りです. 小さなprefixではpersistent indexの固定費が勝ちますが, merge 10以降はdense DFA構築・minimizationを避ける効果が出ています.
+
+| merges | input / quotient states | dense total | lazy total | speedup | identical boundary source |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 1 / 1 | 0.0032 s | 0.0110 s | 0.29× | 25 bytes |
+| 1 | 2 / 2 | 0.0048 s | 0.0129 s | 0.37× | 329 bytes |
+| 3 | 4 / 3 | 0.0110 s | 0.0174 s | 0.63× | 2,175 bytes |
+| 5 | 6 / 4 | 0.0399 s | 0.0343 s | 1.16× | 12,159 bytes |
+| 10 | 11 / 7 | 2.8193 s | 1.7175 s | 1.64× | 1,003,463 bytes |
+| 15 | 16 / 8 | 15.2065 s | 8.9694 s | 1.70× | 5,438,287 bytes |
+
+したがってlazy quotientはdense構築の爆発を実際に除去し, prefix eliminationも高速化しますが, full r50kの支配項はquotient後のdense target graphとstate-elimination式展開へ移りました. 次に必要なのは724,892,544 cellsをrowへ戻さず, 共通target templateとrowごとのdeny cone差分のまま扱うsymbolic eliminationです.
+
+```bash
+uv run python tools/measure_lazy_r50k.py
 ```
 
 同じ日に, 共通`Boundary`をinline captureへlowerしたPython sourceと, pure byte subgraphだけをPCRE2 `(?(DEFINE)...)` / `(?&name)`へ保持したDAG sourceをbeam width 3で比較しました. `combined artifact`はboundary pattern, token-to-rank pattern, capture-rank table, experimental containerをまとめてraw-DEFLATEした値です.
