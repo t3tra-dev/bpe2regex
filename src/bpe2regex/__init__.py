@@ -1,4 +1,5 @@
 from .build import BuildResult, build_regex_artifact
+from .canonical_program import CanonicalRegexBPE
 from .encoding import CL100K, O200K, P50K, R50K, Encoding
 from .match import TokenMatch
 from .pretokenize import PreTokenizer
@@ -17,6 +18,7 @@ __all__ = [
     "R50K",
     "BuildResult",
     "BytePattern",
+    "CanonicalRegexBPE",
     "Compatibility",
     "Encoding",
     "PreTokenizer",
