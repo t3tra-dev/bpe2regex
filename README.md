@@ -211,10 +211,31 @@ adjacency構築は0.056秒, quotientは0.683秒で, canonical signature全体は
 | 10 | 11 / 7 | 2.8193 s | 1.7175 s | 1.64× | 1,003,463 bytes |
 | 15 | 16 / 8 | 15.2065 s | 8.9694 s | 1.70× | 5,438,287 bytes |
 
-したがってlazy quotientはdense構築の爆発を実際に除去し, prefix eliminationも高速化しますが, full r50kの支配項はquotient後のdense target graphとstate-elimination式展開へ移りました. 次に必要なのは724,892,544 cellsをrowへ戻さず, 共通target templateとrowごとのdeny cone差分のまま扱うsymbolic eliminationです.
+したがってlazy quotientはdense構築の爆発を実際に除去し, prefix eliminationも高速化しますが, full r50kの支配項はquotient後のdense target graphとstate-elimination式展開へ移りました. この724,892,544 cellsをrowへ戻さず扱うsymbolic layerとして, 後述のregular-equation dialectを追加しています.
 
 ```bash
 uv run python tools/measure_lazy_r50k.py
+```
+
+### Length-guarded regular equations
+
+`bpe2regex.reir.equations` は循環をcore 7 opへ混ぜず, lazy quotientの各residualを独立した方程式dialectへcompileします. quotient state `q` のdeny selectorを `D_q`, token `t` のbytesとtargetをそれぞれ `bytes(t)`, `target(t)` とすると, 方程式は次の形です.
+
+```text
+Q_q = Σ* \ ⋃ { bytes(t) · Q_target(t) | t ∈ D_q }
+```
+
+すべてのvariable参照は非空tokenの後ろにあるため, `verify_length_guarded()` は入力長に関する再帰が必ず進むことをdeny setの展開なしで証明します. `PersistentDenialConeSelectorDAG` はstate signatureから共有`TokenCone` nodeを参照し, 22,179,214個のdeny cellを列挙しません. `RegularEquationInterpreter` はこのlength-guarded semanticsを直接評価し, 小alphabetの全state・全入力列挙と実r50k merge prefixのrandomized first-token比較に使います.
+
+core REIRへの変換は `BudgetedEquationCoreLowerer` だけが担当し, state数・token check数・transition group数・GNFA edge数・expression occurrence数の全budgetを通過する小規模系に限定します. full r50kを誤ってeager GNFAへ戻す既定経路はありません.
+
+2026-08-31のfull r50k実測では, 14,424 equations, 14,425 selectors（global selectorを含む）, 13,902 unique conesを0.22秒で構築しました. adjacency 0.06秒, quotient 0.70秒を含めても約0.98秒で, minimum guardは1 byteです.
+
+`equations.research.pcre2` はproduction emitterから隔離したopt-in backendです. numeric subroutine, `DEFINE`, `\K`, `MARK`を用いてcontrol flowとfirst-token rankを一つのPCRE2 patternへ保ちます. full r50k source生成は約0.89秒, 10,004,000 source bytes / 1,212,472 raw-DEFLATE bytes, 28,326 groupsでした. これはsource-size研究用の結果であり, 標準PCRE2のpattern-size/JIT制約があるためportable runtimeには接続していません.
+
+```bash
+uv run python tools/measure_regular_equation_r50k.py
+uv run python tools/measure_regular_equation_r50k.py --emit-pcre2
 ```
 
 同じ日に, 共通`Boundary`をinline captureへlowerしたPython sourceと, pure byte subgraphだけをPCRE2 `(?(DEFINE)...)` / `(?&name)`へ保持したDAG sourceをbeam width 3で比較しました. `combined artifact`はboundary pattern, token-to-rank pattern, capture-rank table, experimental containerをまとめてraw-DEFLATEした値です.

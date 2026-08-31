@@ -1,0 +1,85 @@
+"""Length-guarded regular equations over canonical-token residuals."""
+
+from .analysis import (
+    LengthGuardednessReport,
+    ReferenceGuard,
+    UnguardedEquationError,
+    analyze_length_guardedness,
+    verify_length_guarded,
+)
+from .compiler import (
+    CanonicalRegularEquationCompiler,
+    RegularEquationCompilationMetrics,
+    RegularEquationCompilationResult,
+)
+from .interpreter import RegularEquationInterpreter
+from .ir import (
+    EQUATION_EPSILON,
+    EQUATION_NEVER,
+    EQUATION_UNIVERSAL,
+    EquationAlternate,
+    EquationConcat,
+    EquationDifference,
+    EquationEpsilon,
+    EquationExpr,
+    EquationLiteral,
+    EquationNever,
+    EquationRef,
+    EquationTerm,
+    EquationTokenSelectorRef,
+    EquationUniversal,
+    RegularEquation,
+    RegularEquationIR,
+)
+from .lowering import (
+    BudgetedEquationCoreLowerer,
+    EquationCoreLoweringBudget,
+    EquationCoreLoweringBudgetExceeded,
+    EquationCoreLoweringMetrics,
+    EquationCoreLoweringResult,
+    lower_regular_equations_to_core,
+)
+from .selectors import (
+    DenialConeSelectorMetrics,
+    DenialConeSelectorNode,
+    PersistentDenialConeSelectorDAG,
+    TokenSelector,
+)
+
+__all__ = [
+    "EQUATION_EPSILON",
+    "EQUATION_NEVER",
+    "EQUATION_UNIVERSAL",
+    "BudgetedEquationCoreLowerer",
+    "CanonicalRegularEquationCompiler",
+    "DenialConeSelectorMetrics",
+    "DenialConeSelectorNode",
+    "EquationAlternate",
+    "EquationConcat",
+    "EquationCoreLoweringBudget",
+    "EquationCoreLoweringBudgetExceeded",
+    "EquationCoreLoweringMetrics",
+    "EquationCoreLoweringResult",
+    "EquationDifference",
+    "EquationEpsilon",
+    "EquationExpr",
+    "EquationLiteral",
+    "EquationNever",
+    "EquationRef",
+    "EquationTerm",
+    "EquationTokenSelectorRef",
+    "EquationUniversal",
+    "LengthGuardednessReport",
+    "PersistentDenialConeSelectorDAG",
+    "ReferenceGuard",
+    "RegularEquation",
+    "RegularEquationCompilationMetrics",
+    "RegularEquationCompilationResult",
+    "RegularEquationIR",
+    "RegularEquationInterpreter",
+    "TokenSelector",
+    "UnguardedEquationError",
+    "analyze_length_guardedness",
+    "lower_regular_equations_to_core",
+    "verify_length_guarded",
+]
