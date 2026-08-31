@@ -8,11 +8,20 @@ from .match import TokenMatch
 
 
 class BoundaryRegexSource(Protocol):
-    boundary_pattern: str
-    boundary_capture_count: int
-    token_to_rank: str
-    token_capture_ranks: tuple[int, ...]
-    token_count: int
+    @property
+    def boundary_pattern(self) -> str: ...
+
+    @property
+    def boundary_capture_count(self) -> int: ...
+
+    @property
+    def token_to_rank(self) -> str: ...
+
+    @property
+    def token_capture_ranks(self) -> tuple[int, ...]: ...
+
+    @property
+    def token_count(self) -> int: ...
 
 
 class BoundaryRegexBPE:
